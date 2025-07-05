@@ -233,10 +233,6 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      import_daily_atendimentos: {
-        Args: Record<PropertyKey, never>
-        Returns: undefined
-      }
       verify_admin_login: {
         Args: { input_username: string; input_password: string }
         Returns: boolean
