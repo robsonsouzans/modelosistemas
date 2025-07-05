@@ -10,7 +10,7 @@ import { formatDateToBrazilian } from '@/lib/dateUtils';
 interface AtendimentoStats {
   totalAtendimentos: number;
   tempoMedio: number;
-  taxaResolucao: number;
+  eficienciaIEA: number;
   atendimentosHoje: number;
 }
 
@@ -28,13 +28,13 @@ interface Atendimento {
   created_at: string;
 }
 
-const COLORS = ['#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#06B6D4'];
+const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6'];
 
 export default function AtendimentosDashboard() {
   const [stats, setStats] = useState<AtendimentoStats>({
     totalAtendimentos: 0,
     tempoMedio: 0,
-    taxaResolucao: 0,
+    eficienciaIEA: 0,
     atendimentosHoje: 0
   });
 
@@ -68,6 +68,7 @@ export default function AtendimentosDashboard() {
 
   const loadAtendimentos = async () => {
     try {
+      // Remover qualquer limitação - buscar todos os registros
       const { data, error } = await supabase
         .from('atendimentos')
         .select('*')
@@ -142,11 +143,22 @@ export default function AtendimentosDashboard() {
   };
 
   const calculateStats = (data: Atendimento[]) => {
-    const totalAtendimentos = data.length;
-    const tempoTotal = data.reduce((sum, item) => sum + (item.tempo_total || 0), 0);
+    // Contar atendimentos únicos por id_atendimento
+    const uniqueAtendimentos = new Map();
+    data.forEach(item => {
+      if (!uniqueAtendimentos.has(item.id_atendimento)) {
+        uniqueAtendimentos.set(item.id_atendimento, item);
+      }
+    });
+    
+    const uniqueData = Array.from(uniqueAtendimentos.values());
+    const totalAtendimentos = uniqueData.length;
+    
+    const tempoTotal = uniqueData.reduce((sum, item) => sum + (item.tempo_total || 0), 0);
     const tempoMedio = totalAtendimentos > 0 ? tempoTotal / totalAtendimentos : 0;
-    const resolvidos = data.filter(item => item.resolvido).length;
-    const taxaResolucao = totalAtendimentos > 0 ? (resolvidos / totalAtendimentos) * 100 : 0;
+    
+    // Nova fórmula IEA = Total de Atendimentos ÷ Tempo Médio por Atendimento
+    const eficienciaIEA = tempoMedio > 0 ? totalAtendimentos / tempoMedio : 0;
     
     const today = new Date().toISOString().split('T')[0];
     const atendimentosHoje = data.filter(item => item.data === today).length;
@@ -154,34 +166,46 @@ export default function AtendimentosDashboard() {
     setStats({
       totalAtendimentos,
       tempoMedio: Math.round(tempoMedio),
-      taxaResolucao: Math.round(taxaResolucao),
+      eficienciaIEA: Math.round(eficienciaIEA * 100) / 100, // 2 casas decimais
       atendimentosHoje
     });
   };
 
   const generateChartData = (data: Atendimento[]) => {
+    // Agrupar por id_atendimento único
+    const uniqueAtendimentos = new Map();
+    data.forEach(item => {
+      if (!uniqueAtendimentos.has(item.id_atendimento)) {
+        uniqueAtendimentos.set(item.id_atendimento, item);
+      }
+    });
+    const uniqueData = Array.from(uniqueAtendimentos.values());
+
     // Dados por atendente
-    const attendantStats = data.reduce((acc: any, item) => {
+    const attendantStats = uniqueData.reduce((acc: any, item) => {
       if (!acc[item.atendente]) {
-        acc[item.atendente] = { count: 0, tempo: 0, resolvidos: 0 };
+        acc[item.atendente] = { count: 0, tempo: 0 };
       }
       acc[item.atendente].count++;
       acc[item.atendente].tempo += item.tempo_total || 0;
-      if (item.resolvido) acc[item.atendente].resolvidos++;
       return acc;
     }, {});
 
-    const attendantChartData = Object.entries(attendantStats).map(([name, stats]: [string, any]) => ({
-      name,
-      atendimentos: stats.count,
-      tempoMedio: Math.round(stats.tempo / stats.count),
-      taxaResolucao: Math.round((stats.resolvidos / stats.count) * 100)
-    }));
+    const attendantChartData = Object.entries(attendantStats).map(([name, stats]: [string, any]) => {
+      const tempoMedio = stats.tempo / stats.count;
+      const iea = tempoMedio > 0 ? stats.count / tempoMedio : 0;
+      return {
+        name,
+        atendimentos: stats.count,
+        tempoMedio: Math.round(tempoMedio),
+        eficienciaIEA: Math.round(iea * 100) / 100
+      };
+    });
 
     setAttendantData(attendantChartData);
 
-    // Dados por empresa
-    const companyStats = data.reduce((acc: any, item) => {
+    // Dados por empresa - TOP 5
+    const companyStats = uniqueData.reduce((acc: any, item) => {
       const empresa = item.chave || 'Sem Empresa';
       if (!acc[empresa]) {
         acc[empresa] = 0;
@@ -190,10 +214,10 @@ export default function AtendimentosDashboard() {
       return acc;
     }, {});
 
-    const companyChartData = Object.entries(companyStats).map(([name, count]) => ({
-      name,
-      value: count
-    }));
+    const companyChartData = Object.entries(companyStats)
+      .map(([name, count]) => ({ name, value: count }))
+      .sort((a: any, b: any) => b.value - a.value)
+      .slice(0, 5); // TOP 5 apenas
 
     setCompanyData(companyChartData);
 
@@ -205,23 +229,32 @@ export default function AtendimentosDashboard() {
     });
 
     const dailyStats = last7Days.map(date => {
-      const dayData = data.filter(item => item.data === date);
+      const dayData = uniqueData.filter(item => item.data === date);
+      const tempoMedio = dayData.length > 0 ? dayData.reduce((sum, item) => sum + (item.tempo_total || 0), 0) / dayData.length : 0;
       return {
         date: formatDateToBrazilian(date),
         atendimentos: dayData.length,
-        tempoMedio: dayData.length > 0 ? Math.round(dayData.reduce((sum, item) => sum + (item.tempo_total || 0), 0) / dayData.length) : 0
+        tempoMedio: Math.round(tempoMedio)
       };
     });
 
     setDailyData(dailyStats);
 
-    // Dados por status
-    const statusStats = data.reduce((acc: any, item) => {
-      const status = item.resolvido ? 'Resolvido' : 'Pendente';
-      if (!acc[status]) {
-        acc[status] = 0;
+    // Dados por status baseado em eficiência IEA
+    const statusStats = attendantChartData.reduce((acc: any, item) => {
+      let categoria = '';
+      if (item.eficienciaIEA >= 1.0) {
+        categoria = 'Alta Eficiência';
+      } else if (item.eficienciaIEA >= 0.5) {
+        categoria = 'Média Eficiência';
+      } else {
+        categoria = 'Baixa Eficiência';
       }
-      acc[status]++;
+      
+      if (!acc[categoria]) {
+        acc[categoria] = 0;
+      }
+      acc[categoria]++;
       return acc;
     }, {});
 
@@ -303,8 +336,8 @@ export default function AtendimentosDashboard() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-blue-100 text-sm font-medium">Total de Atendimentos</p>
-                <p className="text-3xl font-bold">{stats.totalAtendimentos.toLocaleString()}</p>
-                <p className="text-blue-100 text-xs mt-1">Registros encontrados</p>
+                <p className="text-3xl font-bold text-white">{stats.totalAtendimentos.toLocaleString()}</p>
+                <p className="text-blue-100 text-xs mt-1">Registros únicos</p>
               </div>
               <MessageSquare className="h-8 w-8 text-blue-200" />
             </div>
@@ -316,7 +349,7 @@ export default function AtendimentosDashboard() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-green-100 text-sm font-medium">Tempo Médio</p>
-                <p className="text-3xl font-bold">{stats.tempoMedio}</p>
+                <p className="text-3xl font-bold text-white">{stats.tempoMedio}</p>
                 <p className="text-green-100 text-xs mt-1">Minutos por atendimento</p>
               </div>
               <Timer className="h-8 w-8 text-green-200" />
@@ -328,9 +361,9 @@ export default function AtendimentosDashboard() {
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-yellow-100 text-sm font-medium">Taxa de Resolução</p>
-                <p className="text-3xl font-bold">{stats.taxaResolucao}%</p>
-                <p className="text-yellow-100 text-xs mt-1">Problemas resolvidos</p>
+                <p className="text-yellow-100 text-sm font-medium">Eficiência IEA</p>
+                <p className="text-3xl font-bold text-white">{stats.eficienciaIEA}</p>
+                <p className="text-yellow-100 text-xs mt-1">Total ÷ Tempo Médio</p>
               </div>
               <CheckCircle className="h-8 w-8 text-yellow-200" />
             </div>
@@ -342,7 +375,7 @@ export default function AtendimentosDashboard() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-purple-100 text-sm font-medium">Atendimentos Hoje</p>
-                <p className="text-3xl font-bold">{stats.atendimentosHoje}</p>
+                <p className="text-3xl font-bold text-white">{stats.atendimentosHoje}</p>
                 <p className="text-purple-100 text-xs mt-1">Registros de hoje</p>
               </div>
               <Clock className="h-8 w-8 text-purple-200" />
@@ -364,9 +397,22 @@ export default function AtendimentosDashboard() {
             <ResponsiveContainer width="100%" height={300}>
               <BarChart data={attendantData}>
                 <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="name" angle={-45} textAnchor="end" height={100} />
-                <YAxis />
-                <Tooltip />
+                <XAxis 
+                  dataKey="name" 
+                  angle={-45} 
+                  textAnchor="end" 
+                  height={100}
+                  style={{ fill: '#374151', fontSize: '12px' }}
+                />
+                <YAxis style={{ fill: '#374151', fontSize: '12px' }} />
+                <Tooltip 
+                  contentStyle={{ 
+                    backgroundColor: 'white', 
+                    border: '1px solid #ccc',
+                    color: '#374151'
+                  }}
+                  labelStyle={{ color: '#374151' }}
+                />
                 <Bar dataKey="atendimentos" fill="#3B82F6" name="Atendimentos" />
               </BarChart>
             </ResponsiveContainer>
@@ -377,7 +423,7 @@ export default function AtendimentosDashboard() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Target className="h-5 w-5" />
-              Distribuição por Empresa
+              TOP 5 Empresas
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -397,7 +443,7 @@ export default function AtendimentosDashboard() {
                     <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                   ))}
                 </Pie>
-                <Tooltip />
+                <Tooltip contentStyle={{ color: '#374151' }} />
               </PieChart>
             </ResponsiveContainer>
           </CardContent>
@@ -416,11 +462,21 @@ export default function AtendimentosDashboard() {
             <ResponsiveContainer width="100%" height={300}>
               <LineChart data={dailyData}>
                 <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="date" />
-                <YAxis />
-                <Tooltip />
-                <Line type="monotone" dataKey="atendimentos" stroke="#8884d8" strokeWidth={2} name="Atendimentos" />
-                <Line type="monotone" dataKey="tempoMedio" stroke="#82ca9d" strokeWidth={2} name="Tempo Médio (min)" />
+                <XAxis 
+                  dataKey="date" 
+                  style={{ fill: '#374151', fontSize: '12px' }}
+                />
+                <YAxis style={{ fill: '#374151', fontSize: '12px' }} />
+                <Tooltip 
+                  contentStyle={{ 
+                    backgroundColor: 'white', 
+                    border: '1px solid #ccc',
+                    color: '#374151'
+                  }}
+                  labelStyle={{ color: '#374151' }}
+                />
+                <Line type="monotone" dataKey="atendimentos" stroke="#3B82F6" strokeWidth={2} name="Atendimentos" />
+                <Line type="monotone" dataKey="tempoMedio" stroke="#10B981" strokeWidth={2} name="Tempo Médio (min)" />
               </LineChart>
             </ResponsiveContainer>
           </CardContent>
@@ -430,7 +486,7 @@ export default function AtendimentosDashboard() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <CheckCircle className="h-5 w-5" />
-              Status dos Atendimentos
+              Distribuição de Eficiência IEA
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -450,7 +506,7 @@ export default function AtendimentosDashboard() {
                     <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                   ))}
                 </Pie>
-                <Tooltip />
+                <Tooltip contentStyle={{ color: '#374151' }} />
               </PieChart>
             </ResponsiveContainer>
           </CardContent>
@@ -462,7 +518,7 @@ export default function AtendimentosDashboard() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <MessageSquare className="h-5 w-5" />
-            Atendimentos Recentes
+            Atendimentos Recentes ({filteredAtendimentos.length} registros encontrados)
           </CardTitle>
         </CardHeader>
         <CardContent>

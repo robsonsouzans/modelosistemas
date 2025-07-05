@@ -4,18 +4,19 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { supabase } from '@/integrations/supabase/client';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
-import { Monitor as MonitorIcon, TrendingUp, Users, Clock, Timer } from 'lucide-react';
+import { Monitor as MonitorIcon, TrendingUp, Users, Clock, Timer, Target } from 'lucide-react';
 import { getCurrentWeekDateRange, getCurrentMonthDateRange, getCurrentYearDateRange } from '@/lib/dateUtils';
 
 interface MonitorStats {
   totalAtendimentos: number;  
   tempoMedio: number;
   atendimentosAtivos: number;
-  eficienciaGeral: number;
+  eficienciaIEA: number;
 }
 
 interface AtendimentoMonitor {
   id: string;
+  id_atendimento: string;
   atendente: string;
   data: string;
   tempo_total: number;
@@ -27,7 +28,7 @@ export default function Monitor() {
     totalAtendimentos: 0,
     tempoMedio: 0,
     atendimentosAtivos: 0,
-    eficienciaGeral: 0
+    eficienciaIEA: 0
   });
 
   const [selectedPeriod, setSelectedPeriod] = useState('semanal');
@@ -55,6 +56,7 @@ export default function Monitor() {
     try {
       const { start, end } = getDateRange();
       
+      // Remover limitações - buscar todos os registros
       let query = supabase
         .from('atendimentos')
         .select('*');
@@ -79,54 +81,55 @@ export default function Monitor() {
   };
 
   const calculateStats = (data: AtendimentoMonitor[]) => {
-    const totalAtendimentos = data.length;
-    const tempoTotal = data.reduce((sum, item) => sum + (item.tempo_total || 0), 0);
+    // Agrupar por id_atendimento único
+    const uniqueAtendimentos = new Map();
+    data.forEach(item => {
+      if (!uniqueAtendimentos.has(item.id_atendimento)) {
+        uniqueAtendimentos.set(item.id_atendimento, item);
+      }
+    });
+    
+    const uniqueData = Array.from(uniqueAtendimentos.values());
+    const totalAtendimentos = uniqueData.length;
+    
+    const tempoTotal = uniqueData.reduce((sum, item) => sum + (item.tempo_total || 0), 0);
     const tempoMedio = totalAtendimentos > 0 ? Math.round(tempoTotal / totalAtendimentos) : 0;
     
     const today = new Date().toISOString().split('T')[0];
     const atendimentosAtivos = data.filter(item => item.data === today && !item.resolvido).length;
     
-    const resolvidos = data.filter(item => item.resolvido).length;
-    const eficienciaGeral = totalAtendimentos > 0 ? Math.round((resolvidos / totalAtendimentos) * 100) : 0;
+    // Nova fórmula IEA = Total de Atendimentos ÷ Tempo Médio por Atendimento
+    const eficienciaIEA = tempoMedio > 0 ? totalAtendimentos / tempoMedio : 0;
 
     setStats({
       totalAtendimentos,
       tempoMedio,
       atendimentosAtivos,
-      eficienciaGeral
+      eficienciaIEA: Math.round(eficienciaIEA * 100) / 100 // 2 casas decimais
     });
   };
 
   const generateChartData = (data: AtendimentoMonitor[]) => {
-    // Performance por período
-    let groupBy = '';
-    let formatKey = '';
-    
-    switch (selectedPeriod) {
-      case 'semanal':
-        groupBy = 'data';
-        formatKey = 'day';
-        break;
-      case 'mensal':
-        groupBy = 'data';
-        formatKey = 'day';  
-        break;
-      case 'anual':
-        groupBy = 'month';
-        formatKey = 'month';
-        break;
-    }
+    // Agrupar por id_atendimento único para contagem correta
+    const uniqueAtendimentos = new Map();
+    data.forEach(item => {
+      if (!uniqueAtendimentos.has(item.id_atendimento)) {
+        uniqueAtendimentos.set(item.id_atendimento, item);
+      }
+    });
+    const uniqueData = Array.from(uniqueAtendimentos.values());
 
+    // Performance por período
     const performanceStats: any = {};
     
-    data.forEach(item => {
+    uniqueData.forEach(item => {
       let key = '';
-      if (formatKey === 'day') {
-        const date = new Date(item.data);
-        key = `${date.getDate().toString().padStart(2, '0')}/${(date.getMonth() + 1).toString().padStart(2, '0')}`;
-      } else if (formatKey === 'month') {
-        const date = new Date(item.data);
+      const date = new Date(item.data);
+      
+      if (selectedPeriod === 'anual') {
         key = `${(date.getMonth() + 1).toString().padStart(2, '0')}/${date.getFullYear()}`;
+      } else {
+        key = `${date.getDate().toString().padStart(2, '0')}/${(date.getMonth() + 1).toString().padStart(2, '0')}`;
       }
       
       if (!performanceStats[key]) {
@@ -137,17 +140,21 @@ export default function Monitor() {
       if (item.resolvido) performanceStats[key].resolvidos++;
     });
 
-    const performanceChartData = Object.entries(performanceStats).map(([period, stats]: [string, any]) => ({
-      period,
-      atendimentos: stats.count,
-      tempoMedio: Math.round(stats.tempo / stats.count),
-      eficiencia: Math.round((stats.resolvidos / stats.count) * 100)
-    })).sort((a, b) => a.period.localeCompare(b.period));
+    const performanceChartData = Object.entries(performanceStats).map(([period, stats]: [string, any]) => {
+      const tempoMedio = stats.tempo / stats.count;
+      const iea = tempoMedio > 0 ? stats.count / tempoMedio : 0;
+      return {
+        period,
+        atendimentos: stats.count,
+        tempoMedio: Math.round(tempoMedio),
+        eficienciaIEA: Math.round(iea * 100) / 100
+      };
+    }).sort((a, b) => a.period.localeCompare(b.period));
 
     setPerformanceData(performanceChartData);
 
-    // Dados por atendente
-    const attendantStats = data.reduce((acc: any, item) => {
+    // Dados por atendente usando registros únicos
+    const attendantStats = uniqueData.reduce((acc: any, item) => {
       if (!acc[item.atendente]) {
         acc[item.atendente] = { count: 0, tempo: 0, resolvidos: 0 };
       }
@@ -157,12 +164,16 @@ export default function Monitor() {
       return acc;
     }, {});
 
-    const attendantChartData = Object.entries(attendantStats).map(([name, stats]: [string, any]) => ({
-      name,
-      atendimentos: stats.count,
-      tempoMedio: Math.round(stats.tempo / stats.count),
-      eficiencia: Math.round((stats.resolvidos / stats.count) * 100)
-    }));
+    const attendantChartData = Object.entries(attendantStats).map(([name, stats]: [string, any]) => {
+      const tempoMedio = stats.tempo / stats.count;
+      const iea = tempoMedio > 0 ? stats.count / tempoMedio : 0;
+      return {
+        name,
+        atendimentos: stats.count,
+        tempoMedio: Math.round(tempoMedio),
+        eficienciaIEA: Math.round(iea * 100) / 100
+      };
+    });
 
     setAttendantData(attendantChartData);
   };
@@ -193,56 +204,64 @@ export default function Monitor() {
         </CardContent>
       </Card>
 
-      {/* Cards de Estatísticas */}
+      {/* Cards de Estatísticas - Design Antigo */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-        <Card className="bg-gradient-to-r from-blue-500 to-blue-600 text-white">
+        <Card>
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-blue-100 text-sm font-medium">Total Atendimentos</p>
-                <p className="text-3xl font-bold">{stats.totalAtendimentos.toLocaleString()}</p>
-                <p className="text-blue-100 text-xs mt-1">No período selecionado</p>
+                <p className="text-gray-600 text-sm font-medium">Total Atendimentos</p>
+                <p className="text-3xl font-bold text-gray-900">{stats.totalAtendimentos.toLocaleString()}</p>
+                <p className="text-gray-500 text-xs mt-1">No período selecionado</p>
               </div>
-              <Users className="h-8 w-8 text-blue-200" />
+              <div className="p-3 bg-blue-100 rounded-full">
+                <Users className="h-6 w-6 text-blue-600" />
+              </div>
             </div>
           </CardContent>
         </Card>
 
-        <Card className="bg-gradient-to-r from-green-500 to-green-600 text-white">
+        <Card>
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-green-100 text-sm font-medium">Tempo Médio</p>
-                <p className="text-3xl font-bold">{stats.tempoMedio}</p>
-                <p className="text-green-100 text-xs mt-1">Minutos por atendimento</p>
+                <p className="text-gray-600 text-sm font-medium">Tempo Médio</p>
+                <p className="text-3xl font-bold text-gray-900">{stats.tempoMedio}</p>
+                <p className="text-gray-500 text-xs mt-1">Minutos por atendimento</p>
               </div>
-              <Timer className="h-8 w-8 text-green-200" />
+              <div className="p-3 bg-green-100 rounded-full">
+                <Timer className="h-6 w-6 text-green-600" />
+              </div>
             </div>
           </CardContent>
         </Card>
 
-        <Card className="bg-gradient-to-r from-yellow-500 to-yellow-600 text-white">
+        <Card>
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-yellow-100 text-sm font-medium">Ativos Hoje</p>
-                <p className="text-3xl font-bold">{stats.atendimentosAtivos}</p>
-                <p className="text-yellow-100 text-xs mt-1">Atendimentos em andamento</p>
+                <p className="text-gray-600 text-sm font-medium">Eficiência IEA</p>
+                <p className="text-3xl font-bold text-gray-900">{stats.eficienciaIEA}</p>
+                <p className="text-gray-500 text-xs mt-1">Total ÷ Tempo Médio</p>
               </div>
-              <Clock className="h-8 w-8 text-yellow-200" />
+              <div className="p-3 bg-purple-100 rounded-full">
+                <Target className="h-6 w-6 text-purple-600" />
+              </div>
             </div>
           </CardContent>
         </Card>
 
-        <Card className="bg-gradient-to-r from-purple-500 to-purple-600 text-white">
+        <Card>
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-purple-100 text-sm font-medium">Eficiência Geral</p>
-                <p className="text-3xl font-bold">{stats.eficienciaGeral}%</p>
-                <p className="text-purple-100 text-xs mt-1">Taxa de resolução</p>
+                <p className="text-gray-600 text-sm font-medium">Ativos Hoje</p>
+                <p className="text-3xl font-bold text-gray-900">{stats.atendimentosAtivos}</p>
+                <p className="text-gray-500 text-xs mt-1">Atendimentos em andamento</p>
               </div>
-              <TrendingUp className="h-8 w-8 text-purple-200" />
+              <div className="p-3 bg-yellow-100 rounded-full">
+                <Clock className="h-6 w-6 text-yellow-600" />
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -266,16 +285,16 @@ export default function Monitor() {
                   angle={-45} 
                   textAnchor="end" 
                   height={80}
-                  style={{ fill: '#000000', fontSize: '12px' }}
+                  style={{ fill: '#374151', fontSize: '12px' }}
                 />
-                <YAxis style={{ fill: '#000000', fontSize: '12px' }} />
+                <YAxis style={{ fill: '#374151', fontSize: '12px' }} />
                 <Tooltip 
                   contentStyle={{ 
                     backgroundColor: 'white', 
                     border: '1px solid #ccc',
-                    color: '#000000'
+                    color: '#374151'
                   }}
-                  labelStyle={{ color: '#000000' }}
+                  labelStyle={{ color: '#374151' }}
                 />
                 <Line 
                   type="monotone" 
@@ -286,10 +305,10 @@ export default function Monitor() {
                 />
                 <Line 
                   type="monotone" 
-                  dataKey="eficiencia" 
+                  dataKey="eficienciaIEA" 
                   stroke="#10B981" 
                   strokeWidth={2} 
-                  name="Eficiência %" 
+                  name="Eficiência IEA" 
                 />
               </LineChart>
             </ResponsiveContainer>
@@ -312,19 +331,19 @@ export default function Monitor() {
                   angle={-45} 
                   textAnchor="end" 
                   height={100}
-                  style={{ fill: '#000000', fontSize: '12px' }}
+                  style={{ fill: '#374151', fontSize: '12px' }}
                 />
-                <YAxis style={{ fill: '#000000', fontSize: '12px' }} />
+                <YAxis style={{ fill: '#374151', fontSize: '12px' }} />
                 <Tooltip 
                   contentStyle={{ 
                     backgroundColor: 'white', 
                     border: '1px solid #ccc',
-                    color: '#000000'
+                    color: '#374151'
                   }}
-                  labelStyle={{ color: '#000000' }}
+                  labelStyle={{ color: '#374151' }}
                 />
                 <Bar dataKey="atendimentos" fill="#3B82F6" name="Atendimentos" />
-                <Bar dataKey="eficiencia" fill="#10B981" name="Eficiência %" />
+                <Bar dataKey="eficienciaIEA" fill="#10B981" name="Eficiência IEA" />
               </BarChart>
             </ResponsiveContainer>
           </CardContent>
@@ -347,7 +366,7 @@ export default function Monitor() {
                   <th className="text-left py-3 px-4 font-semibold">Atendente</th>
                   <th className="text-left py-3 px-4 font-semibold">Atendimentos</th>
                   <th className="text-left py-3 px-4 font-semibold">Tempo Médio (min)</th>
-                  <th className="text-left py-3 px-4 font-semibold">Eficiência</th>
+                  <th className="text-left py-3 px-4 font-semibold">Eficiência IEA</th>
                   <th className="text-left py-3 px-4 font-semibold">Status</th>
                 </tr>
               </thead>
@@ -359,13 +378,13 @@ export default function Monitor() {
                     <td className="py-3 px-4">{attendant.tempoMedio}</td>
                     <td className="py-3 px-4">
                       <span className={`px-2 py-1 rounded text-xs font-medium ${
-                        attendant.eficiencia >= 80 
+                        attendant.eficienciaIEA >= 1.0
                           ? 'bg-green-100 text-green-800' 
-                          : attendant.eficiencia >= 60 
+                          : attendant.eficienciaIEA >= 0.5
                           ? 'bg-yellow-100 text-yellow-800'
                           : 'bg-red-100 text-red-800'
                       }`}>
-                        {attendant.eficiencia}%
+                        {attendant.eficienciaIEA}
                       </span>
                     </td>
                     <td className="py-3 px-4">
