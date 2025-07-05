@@ -3,7 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import { BarChart3, MessageSquare, Users, Settings, LogOut, User, Monitor, Menu, Home, Cog } from 'lucide-react';
+import { BarChart3, MessageSquare, Users, Settings, LogOut, User, Monitor, Menu, Home } from 'lucide-react';
 import { useSidebarContext } from '@/contexts/SidebarContext';
 
 const menuItems = [{
@@ -15,10 +15,6 @@ const menuItems = [{
   href: '/admin/atendimentos',
   icon: MessageSquare
 }, {
-  name: 'Monitor',
-  href: '/admin/monitor',
-  icon: Monitor
-}, {
   name: 'Feedbacks',
   href: '/admin/feedbacks',
   icon: BarChart3
@@ -29,7 +25,11 @@ const menuItems = [{
 }, {
   name: 'Gerenciamento',
   href: '/admin/management',
-  icon: Cog
+  icon: Settings
+}, {
+  name: 'Monitor',
+  href: '/admin/monitor',
+  icon: Monitor
 }, {
   name: 'Configurações',
   href: '/admin/settings',

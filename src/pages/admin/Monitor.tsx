@@ -1,311 +1,553 @@
-
 import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Button } from '@/components/ui/button';
 import { supabase } from '@/integrations/supabase/client';
-import { Monitor as MonitorIcon, Crown, Star, Award, Maximize2, Clock, User } from 'lucide-react';
-import { getCurrentWeekDateRange, getCurrentMonthDateRange, getCurrentYearDateRange } from '@/lib/dateUtils';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import { Award, Trophy, Target, TrendingUp, Calendar, Users, Timer, BarChart3 } from 'lucide-react';
+import { useToast } from '@/hooks/use-toast';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { cn } from '@/lib/utils';
 
-interface AtendimentoMonitor {
-  id: string;
-  id_atendimento: string;
+interface AtendentePerformance {
   atendente: string;
-  data: string;
-  tempo_total: number;
-  resolvido: boolean;
+  totalAtendimentos: number;
+  tempoMedio: number;
+  tempoTotal: number;
+  eficiencia: number;
+  foto_url?: string;
 }
 
-interface AttendantStats {
-  name: string;
-  atendimentos: number;
+interface RankingStats {
+  totalAtendimentos: number;
+  ieaMedia: number;
   tempoMedio: number;
-  eficienciaIEA: number;
-  position: number;
 }
+
+const COLORS = ['#8B5CF6', '#A855F7', '#9333EA', '#7C3AED', '#6D28D9', '#5B21B6'];
 
 export default function Monitor() {
-  const [selectedPeriod, setSelectedPeriod] = useState('mensal');
-  const [selectedRanking, setSelectedRanking] = useState('mensal');
-  const [topAttendants, setTopAttendants] = useState<AttendantStats[]>([]);
-  const [allAttendants, setAllAttendants] = useState<AttendantStats[]>([]);
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [selectedPeriod, setSelectedPeriod] = useState('weekly');
+  const [rankings, setRankings] = useState<AtendentePerformance[]>([]);
+  const [allActiveAttendants, setAllActiveAttendants] = useState<AtendentePerformance[]>([]);
+  const [stats, setStats] = useState<RankingStats>({
+    totalAtendimentos: 0,
+    ieaMedia: 0,
+    tempoMedio: 0
+  });
+  const [isFullScreen, setIsFullScreen] = useState(false);
+  const { toast } = useToast();
 
   useEffect(() => {
-    loadMonitorData();
-  }, [selectedPeriod, selectedRanking]);
+    loadRankings();
+  }, [selectedPeriod]);
 
-  const getDateRange = (period: string) => {
-    switch (period) {
-      case 'semanal':
-        return getCurrentWeekDateRange();
-      case 'mensal':
-        return getCurrentMonthDateRange();
-      case 'anual':  
-        return getCurrentYearDateRange();
+  const getDateRange = () => {
+    const now = new Date();
+    let startDate = new Date();
+    
+    switch (selectedPeriod) {
+      case 'weekly':
+        startDate.setDate(now.getDate() - 7);
+        break;
+      case 'monthly':
+        startDate.setDate(now.getDate() - 30);
+        break;
+      case 'yearly':
+        startDate.setFullYear(now.getFullYear() - 1);
+        break;
       default:
-        return { start: '', end: '' };
+        startDate.setDate(now.getDate() - 7);
     }
+    
+    return {
+      startDate: startDate.toISOString().split('T')[0],
+      endDate: now.toISOString().split('T')[0]
+    };
   };
 
-  const loadMonitorData = async () => {
+  const loadRankings = async () => {
     try {
-      const { start, end } = getDateRange(selectedRanking);
-      
+      const { startDate, endDate } = getDateRange();
+      console.log('Carregando rankings para período:', { selectedPeriod, startDate, endDate });
+
+      // Primeiro, carregue todos os atendentes ativos
+      const { data: activeAttendants } = await supabase
+        .from('attendants')
+        .select('name, photo_url')
+        .eq('active', true);
+
+      if (!activeAttendants || activeAttendants.length === 0) {
+        console.log('Nenhum atendente ativo encontrado');
+        setRankings([]);
+        setAllActiveAttendants([]);
+        setStats({ totalAtendimentos: 0, ieaMedia: 0, tempoMedio: 0 });
+        return;
+      }
+
+      // Buscar atendimentos no período específico
       let query = supabase
         .from('atendimentos')
-        .select('*');
+        .select('*')
+        .gte('data', startDate)
+        .lte('data', endDate);
 
-      if (start && end) {
-        query = query.gte('data', start).lte('data', end);
+      // Filtrar apenas atendentes ativos
+      const activeAttendantNames = activeAttendants.map(a => a.name);
+      query = query.in('atendente', activeAttendantNames);
+
+      const { data: atendimentos, error } = await query;
+
+      if (error) {
+        console.error('Erro ao buscar atendimentos:', error);
+        throw error;
       }
 
-      const { data, error } = await query;
+      console.log(`Atendimentos encontrados para o período: ${atendimentos?.length || 0}`);
 
-      if (error) throw error;
+      if (!atendimentos || atendimentos.length === 0) {
+        console.log('Nenhum atendimento encontrado para o período');
+        // Ainda mostrar todos os atendentes ativos, mas com valores zerados
+        const emptyPerformance: AtendentePerformance[] = activeAttendants.map(attendant => ({
+          atendente: attendant.name,
+          totalAtendimentos: 0,
+          tempoMedio: 0,
+          tempoTotal: 0,
+          eficiencia: 0,
+          foto_url: attendant.photo_url
+        }));
+        
+        setRankings([]);
+        setAllActiveAttendants(emptyPerformance);
+        setStats({ totalAtendimentos: 0, ieaMedia: 0, tempoMedio: 0 });
+        return;
+      }
 
-      console.log(`Monitor - Dados carregados para período ${selectedRanking}:`, data?.length);
+      // Calcular performance por atendente
+      const atendenteMap = new Map<string, { total: number; tempo: number; }>();
       
-      if (data) {
-        processAttendantData(data);
-      }
+      atendimentos.forEach(atendimento => {
+        const current = atendenteMap.get(atendimento.atendente) || { total: 0, tempo: 0 };
+        current.total++;
+        current.tempo += atendimento.tempo_total || 0;
+        atendenteMap.set(atendimento.atendente, current);
+      });
+
+      // Criar performance para TODOS os atendentes ativos
+      const allActivePerformance: AtendentePerformance[] = activeAttendants.map(attendant => {
+        const data = atendenteMap.get(attendant.name) || { total: 0, tempo: 0 };
+        const tempoMedio = data.total > 0 ? data.tempo / data.total : 0;
+        const eficiencia = tempoMedio > 0 ? data.total / tempoMedio : 0;
+        
+        return {
+          atendente: attendant.name,
+          totalAtendimentos: data.total,
+          tempoMedio,
+          tempoTotal: data.tempo,
+          eficiencia,
+          foto_url: attendant.photo_url
+        };
+      });
+
+      // Filtrar apenas atendentes que têm atendimentos no período para o ranking principal
+      const rankingsWithData = allActivePerformance.filter(a => a.totalAtendimentos > 0);
+      
+      // Ordenar por eficiência (IEA) do maior para menor
+      rankingsWithData.sort((a, b) => b.eficiencia - a.eficiencia);
+      allActivePerformance.sort((a, b) => b.eficiencia - a.eficiencia);
+
+      console.log('Rankings calculados:', rankingsWithData.length);
+      console.log('Todos atendentes ativos:', allActivePerformance.length);
+
+      setRankings(rankingsWithData);
+      setAllActiveAttendants(allActivePerformance);
+
+      // Calcular estatísticas gerais
+      const totalAtendimentos = atendimentos.length;
+      const tempoTotal = atendimentos.reduce((sum, a) => sum + (a.tempo_total || 0), 0);
+      const tempoMedio = totalAtendimentos > 0 ? tempoTotal / totalAtendimentos : 0;
+      const ieaMedia = rankingsWithData.length > 0 
+        ? rankingsWithData.reduce((sum, a) => sum + a.eficiencia, 0) / rankingsWithData.length 
+        : 0;
+
+      setStats({
+        totalAtendimentos,
+        ieaMedia,
+        tempoMedio
+      });
+
     } catch (error) {
-      console.error('Erro ao carregar dados do monitor:', error);
+      console.error('Erro ao carregar rankings:', error);
+      toast({
+        title: "Erro",
+        description: "Erro ao carregar dados do ranking",
+        variant: "destructive"
+      });
     }
   };
 
-  const processAttendantData = (data: AtendimentoMonitor[]) => {
-    // Agrupar por id_atendimento único
-    const uniqueAtendimentos = new Map();
-    data.forEach(item => {
-      if (!uniqueAtendimentos.has(item.id_atendimento)) {
-        uniqueAtendimentos.set(item.id_atendimento, item);
-      }
-    });
-    const uniqueData = Array.from(uniqueAtendimentos.values());
-
-    // Calcular estatísticas por atendente
-    const attendantStats = uniqueData.reduce((acc: any, item) => {
-      if (!acc[item.atendente]) {
-        acc[item.atendente] = { count: 0, tempo: 0 };
-      }
-      acc[item.atendente].count++;
-      acc[item.atendente].tempo += item.tempo_total || 0;
-      return acc;
-    }, {});
-
-    // Converter para array e calcular IEA
-    const attendantArray = Object.entries(attendantStats).map(([name, stats]: [string, any]) => {
-      const tempoMedio = stats.tempo / stats.count;
-      const iea = tempoMedio > 0 ? stats.count / tempoMedio : 0;
-      return {
-        name,
-        atendimentos: stats.count,
-        tempoMedio: Math.round(tempoMedio),
-        eficienciaIEA: Math.round(iea * 100) / 100
-      };
-    });
-
-    // Ordenar por eficiência IEA (descendente)
-    const sortedAttendants = attendantArray
-      .sort((a, b) => b.eficienciaIEA - a.eficienciaIEA)
-      .map((attendant, index) => ({
-        ...attendant,
-        position: index + 1
-      }));
-
-    setAllAttendants(sortedAttendants);
-    setTopAttendants(sortedAttendants.slice(0, 3));
-  };
-
-  const toggleFullscreen = () => {
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen();
-      setIsFullscreen(true);
-    } else {
-      document.exitFullscreen();
-      setIsFullscreen(false);
+  const getPeriodLabel = () => {
+    switch (selectedPeriod) {
+      case 'weekly': return 'Semanal';
+      case 'monthly': return 'Mensal';
+      case 'yearly': return 'Anual';
+      default: return 'Semanal';
     }
   };
 
-  const getCardColor = (position: number) => {
-    switch (position) {
-      case 1: return 'from-purple-500 to-purple-600';
-      case 2: return 'from-blue-500 to-blue-600';
-      case 3: return 'from-teal-500 to-teal-600';
-      default: return 'from-gray-500 to-gray-600';
-    }
-  };
+  if (isFullScreen) {
+    return (
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 p-6">
+        <div className="max-w-7xl mx-auto">
+          <div className="flex justify-between items-center mb-6">
+            <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
+              Ranking Completo - {getPeriodLabel()}
+            </h1>
+            <button
+              onClick={() => setIsFullScreen(false)}
+              className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
+            >
+              Voltar
+            </button>
+          </div>
 
-  const getPositionIcon = (position: number) => {
-    switch (position) {
-      case 1: return <Crown className="h-6 w-6 text-yellow-300" />;
-      case 2: return <Star className="h-6 w-6 text-gray-300" />;
-      case 3: return <Award className="h-6 w-6 text-orange-300" />;
-      default: return null;
-    }
-  };
+          {/* Estatísticas Gerais */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <Card className="bg-gradient-to-br from-purple-500 to-purple-600 text-white">
+              <CardContent className="p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-purple-100 text-sm">Total Atendimentos</p>
+                    <p className="text-3xl font-bold">{stats.totalAtendimentos.toLocaleString()}</p>
+                  </div>
+                  <BarChart3 className="h-8 w-8 text-purple-200" />
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="bg-gradient-to-br from-emerald-500 to-emerald-600 text-white">
+              <CardContent className="p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-emerald-100 text-sm">IEA Médio</p>
+                    <p className="text-3xl font-bold">{stats.ieaMedia.toFixed(2)}</p>
+                  </div>
+                  <Target className="h-8 w-8 text-emerald-200" />
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="bg-gradient-to-br from-orange-500 to-orange-600 text-white">
+              <CardContent className="p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-orange-100 text-sm">Tempo Médio</p>
+                    <p className="text-3xl font-bold">{Math.round(stats.tempoMedio)} min</p>
+                  </div>
+                  <Timer className="h-8 w-8 text-orange-200" />
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Ranking Completo */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Trophy className="h-6 w-6 text-yellow-500" />
+                Ranking Completo de Todos os Atendentes Ativos
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50">
+                      <th className="text-left py-3 px-4 font-semibold text-gray-700 dark:text-gray-300">Posição</th>
+                      <th className="text-left py-3 px-4 font-semibold text-gray-700 dark:text-gray-300">Foto</th>
+                      <th className="text-left py-3 px-4 font-semibold text-gray-700 dark:text-gray-300">Atendente</th>
+                      <th className="text-left py-3 px-4 font-semibold text-gray-700 dark:text-gray-300">Atendimentos</th>
+                      <th className="text-left py-3 px-4 font-semibold text-gray-700 dark:text-gray-300">Tempo Médio (min)</th>
+                      <th className="text-left py-3 px-4 font-semibold text-gray-700 dark:text-gray-300">IEA</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {allActiveAttendants.map((atendente, index) => (
+                      <tr key={atendente.atendente} className="border-b border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50">
+                        <td className="py-3 px-4 font-bold">
+                          <span className={`px-2 py-1 rounded text-xs font-medium ${
+                            index === 0 && atendente.totalAtendimentos > 0 ? 'bg-yellow-100 dark:bg-yellow-900/20 text-yellow-800 dark:text-yellow-400' : 
+                            index === 1 && atendente.totalAtendimentos > 0 ? 'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-300' : 
+                            index === 2 && atendente.totalAtendimentos > 0 ? 'bg-orange-100 dark:bg-orange-900/20 text-orange-800 dark:text-orange-400' : 
+                            'bg-purple-100 dark:bg-purple-900/20 text-purple-800 dark:text-purple-400'
+                          }`}>
+                            {index + 1}º
+                          </span>
+                        </td>
+                        <td className="py-3 px-4">
+                          <Avatar className="h-8 w-8">
+                            <AvatarImage src={atendente.foto_url} alt={atendente.atendente} />
+                            <AvatarFallback className="text-xs bg-purple-100 dark:bg-purple-900/20 text-purple-700 dark:text-purple-400">
+                              {atendente.atendente.split(' ').map(n => n[0]).join('').substring(0, 2)}
+                            </AvatarFallback>
+                          </Avatar>
+                        </td>
+                        <td className="py-3 px-4 font-medium text-gray-900 dark:text-white">{atendente.atendente}</td>
+                        <td className="py-3 px-4 text-gray-700 dark:text-gray-300">{atendente.totalAtendimentos}</td>
+                        <td className="py-3 px-4 text-gray-700 dark:text-gray-300">{atendente.tempoMedio.toFixed(2)}</td>
+                        <td className="py-3 px-4 font-semibold text-purple-600 dark:text-purple-400">
+                          {atendente.eficiencia.toFixed(2)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-6 p-6">
-      {/* Header com Controles */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <MonitorIcon className="h-5 w-5 text-purple-600" />
-              <CardTitle className="text-purple-600">Controles do Monitor</CardTitle>
-            </div>
-            <Button 
-              variant="outline" 
-              onClick={toggleFullscreen}
-              className="bg-purple-600 text-white hover:bg-purple-700"
-            >
-              <Maximize2 className="h-4 w-4 mr-2" />
-              Tela Cheia
-            </Button>
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+      <div className="p-6 space-y-6">
+        {/* Header com Filtro */}
+        <div className="flex justify-between items-center">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Monitor de Performance</h1>
+            <p className="text-gray-600 dark:text-gray-400">Ranking {getPeriodLabel()} dos Atendentes</p>
           </div>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2 text-sm text-gray-600">
-              <Clock className="h-4 w-4" />
-              {new Date().toLocaleDateString('pt-BR')} - {new Date().toLocaleTimeString('pt-BR')}
-            </div>
-            <Select value={selectedRanking} onValueChange={setSelectedRanking}>
-              <SelectTrigger className="w-48">
-                <SelectValue placeholder="Ranking Mensal" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="anual">Ranking Anual</SelectItem>
-                <SelectItem value="mensal">Ranking Mensal</SelectItem>
-                <SelectItem value="semanal">Ranking Semanal</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </CardContent>
-      </Card>
+          
+          <Select value={selectedPeriod} onValueChange={setSelectedPeriod}>
+            <SelectTrigger className="w-40 border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700">
+              <SelectItem value="weekly">Semanal</SelectItem>
+              <SelectItem value="monthly">Mensal</SelectItem>
+              <SelectItem value="yearly">Anual</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
 
-      {/* Cards dos Top 3 Atendentes */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {topAttendants.map((attendant) => (
-          <Card key={attendant.name} className={`bg-gradient-to-br ${getCardColor(attendant.position)} text-white relative overflow-hidden`}>
+        {/* Métricas Principais */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <Card className="bg-gradient-to-br from-purple-500 to-purple-600 text-white shadow-lg">
             <CardContent className="p-6">
-              <div className="flex items-center justify-between mb-4">
-                {getPositionIcon(attendant.position)}
-                <div className="text-right">
-                  <span className="text-white/80 text-sm">{attendant.position}º Lugar</span>
-                </div>
-              </div>
-              
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center">
-                  <User className="h-6 w-6 text-white" />
-                </div>
+              <div className="flex items-center justify-between">
                 <div>
-                  <h3 className="text-xl font-bold text-white">{attendant.name}</h3>
-                </div>
-              </div>
-
-              <div className="space-y-3">
-                <div className="text-center bg-white/10 rounded-lg p-3">
-                  <div className="text-2xl font-bold text-white">{attendant.eficienciaIEA}</div>
-                  <div className="text-white/80 text-sm">IEA (Eficiência)</div>
-                </div>
-                
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="bg-white/10 rounded-lg p-2 text-center">
-                    <div className="text-lg font-bold text-white">{attendant.atendimentos}</div>
-                    <div className="text-white/80 text-xs">Atendimentos</div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <BarChart3 className="h-5 w-5" />
+                    <span className="text-sm font-medium opacity-90">Total Atendimentos</span>
                   </div>
-                  <div className="bg-white/10 rounded-lg p-2 text-center">
-                    <div className="text-lg font-bold text-white">{attendant.tempoMedio}min</div>
-                    <div className="text-white/80 text-xs">Tempo Médio</div>
+                  <p className="text-3xl font-bold">{stats.totalAtendimentos.toLocaleString()}</p>
+                  <div className="flex items-center mt-2">
+                    <span className="text-sm bg-white/20 px-2 py-1 rounded-full">{getPeriodLabel()}</span>
                   </div>
                 </div>
               </div>
             </CardContent>
           </Card>
-        ))}
-      </div>
 
-      {/* Tabela de Todos os Atendentes */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Award className="h-5 w-5" />
-            Demais Atendentes Ativos - Ranking Completo
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {allAttendants.slice(3).map((attendant) => (
-              <div key={attendant.name} className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
-                <div className="flex items-center gap-2">
-                  <span className="text-lg font-bold text-purple-600">{attendant.position}º</span>
-                  <User className="h-5 w-5 text-gray-400" />
-                </div>
-                <div className="flex-1">
-                  <div className="font-medium text-gray-900">{attendant.name}</div>
-                  <div className="grid grid-cols-3 gap-2 text-xs text-gray-600 mt-1">
-                    <div>
-                      <span className="font-medium text-purple-600">{attendant.eficienciaIEA}</span>
-                      <div>IEA</div>
-                    </div>
-                    <div>
-                      <span className="font-medium text-blue-600">{attendant.atendimentos}</span>
-                      <div>Atend.</div>
-                    </div>
-                    <div>
-                      <span className="font-medium text-teal-600">{attendant.tempoMedio}min</span>
-                      <div>Tempo</div>
-                    </div>
+          <Card className="bg-gradient-to-br from-emerald-500 to-emerald-600 text-white shadow-lg">
+            <CardContent className="p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <Target className="h-5 w-5" />
+                    <span className="text-sm font-medium opacity-90">IEA Médio</span>
+                  </div>
+                  <p className="text-3xl font-bold">{stats.ieaMedia.toFixed(2)}</p>
+                  <div className="flex items-center mt-2">
+                    <span className="text-sm bg-white/20 px-2 py-1 rounded-full">Eficiência</span>
                   </div>
                 </div>
               </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+            </CardContent>
+          </Card>
 
-      {/* Seção de Informações do IEA */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-purple-600">
-              <MonitorIcon className="h-5 w-5" />
-              Índice de Eficiência (IEA)
+          <Card className="bg-gradient-to-br from-orange-500 to-orange-600 text-white shadow-lg">
+            <CardContent className="p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <Timer className="h-5 w-5" />
+                    <span className="text-sm font-medium opacity-90">Tempo Médio</span>
+                  </div>
+                  <p className="text-3xl font-bold">{Math.round(stats.tempoMedio)}</p>
+                  <div className="flex items-center mt-2">
+                    <span className="text-sm bg-white/20 px-2 py-1 rounded-full">minutos</span>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Ranking Principal */}
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+          {/* Top 3 */}
+          <Card className="bg-white dark:bg-gray-800 shadow-sm border border-gray-200 dark:border-gray-700">
+            <CardHeader className="pb-4">
+              <CardTitle className="flex items-center gap-2 text-lg font-semibold text-gray-900 dark:text-white">
+                <Trophy className="h-5 w-5 text-yellow-500" />
+                Top 3 - {getPeriodLabel()}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                {rankings.slice(0, 3).map((atendente, index) => (
+                  <div key={atendente.atendente} className="flex items-center gap-4 p-4 rounded-lg bg-gray-50 dark:bg-gray-700/50">
+                    <div className="flex-shrink-0">
+                      <span className={`inline-flex items-center justify-center w-8 h-8 rounded-full text-sm font-bold ${
+                        index === 0 ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/20 dark:text-yellow-400' :
+                        index === 1 ? 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300' :
+                        'bg-orange-100 text-orange-800 dark:bg-orange-900/20 dark:text-orange-400'
+                      }`}>
+                        {index + 1}
+                      </span>
+                    </div>
+                    <Avatar className="h-10 w-10">
+                      <AvatarImage src={atendente.foto_url} alt={atendente.atendente} />
+                      <AvatarFallback className="bg-purple-100 dark:bg-purple-900/20 text-purple-700 dark:text-purple-400">
+                        {atendente.atendente.split(' ').map(n => n[0]).join('').substring(0, 2)}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div className="flex-1">
+                      <h3 className="font-semibold text-gray-900 dark:text-white">{atendente.atendente}</h3>
+                      <div className="flex items-center gap-4 text-sm text-gray-600 dark:text-gray-400">
+                        <span>{atendente.totalAtendimentos} atendimentos</span>
+                        <span>IEA: {atendente.eficiencia.toFixed(2)}</span>
+                        <span>{atendente.tempoMedio.toFixed(1)} min</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {rankings.length === 0 && (
+                  <div className="text-center py-8 text-gray-500 dark:text-gray-400">
+                    Nenhum atendimento encontrado no período {getPeriodLabel().toLowerCase()}
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Gráfico de Performance */}
+          <Card className="bg-white dark:bg-gray-800 shadow-sm border border-gray-200 dark:border-gray-700">
+            <CardHeader className="pb-4">
+              <CardTitle className="flex items-center gap-2 text-lg font-semibold text-gray-900 dark:text-white">
+                <BarChart3 className="h-5 w-5 text-purple-600" />
+                Performance - {getPeriodLabel()}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {rankings.length > 0 ? (
+                <div className="h-80 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={rankings.slice(0, 10)}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                      <XAxis 
+                        dataKey="atendente" 
+                        angle={-45} 
+                        textAnchor="end" 
+                        height={80} 
+                        fontSize={10} 
+                        stroke="#64748b" 
+                      />
+                      <YAxis stroke="#64748b" fontSize={11} />
+                      <Tooltip 
+                        contentStyle={{ 
+                          backgroundColor: 'var(--background)', 
+                          border: '1px solid var(--border)' 
+                        }} 
+                      />
+                      <Bar 
+                        dataKey="totalAtendimentos" 
+                        fill="#8B5CF6" 
+                        name="Atendimentos" 
+                        radius={[4, 4, 0, 0]} 
+                      />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <div className="flex items-center justify-center h-80 text-gray-500 dark:text-gray-400">
+                  Nenhum dado disponível para o período {getPeriodLabel().toLowerCase()}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Demais Atendentes */}
+        <Card className="bg-white dark:bg-gray-800 shadow-sm border border-gray-200 dark:border-gray-700">
+          <CardHeader className="pb-4 flex flex-row items-center justify-between">
+            <CardTitle className="flex items-center gap-2 text-lg font-semibold text-gray-900 dark:text-white">
+              <Users className="h-5 w-5 text-purple-600" />
+              Todos os Atendentes Ativos - {getPeriodLabel()}
             </CardTitle>
+            <button
+              onClick={() => setIsFullScreen(true)}
+              className="px-3 py-1 text-sm bg-purple-600 text-white rounded-md hover:bg-purple-700 transition-colors"
+            >
+              Ver Tela Cheia
+            </button>
           </CardHeader>
           <CardContent>
-            <div className="space-y-3">
-              <div className="text-sm font-medium text-gray-700">
-                IEA = Total de Atendimentos ÷ Tempo Médio por Atendimento
-              </div>
-              <div className="text-xs text-gray-600">
-                Quanto maior o IEA, melhor a performance do atendente. Este índice considera tanto a produtividade quanto a eficiência temporal.
-              </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50">
+                    <th className="text-left py-3 px-4 font-semibold text-gray-700 dark:text-gray-300">Pos.</th>
+                    <th className="text-left py-3 px-4 font-semibold text-gray-700 dark:text-gray-300">Foto</th>
+                    <th className="text-left py-3 px-4 font-semibold text-gray-700 dark:text-gray-300">Atendente</th>
+                    <th className="text-left py-3 px-4 font-semibold text-gray-700 dark:text-gray-300">Atendimentos</th>
+                    <th className="text-left py-3 px-4 font-semibold text-gray-700 dark:text-gray-300">Tempo Médio</th>
+                    <th className="text-left py-3 px-4 font-semibold text-gray-700 dark:text-gray-300">IEA</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {allActiveAttendants.slice(0, 10).map((atendente, index) => (
+                    <tr key={atendente.atendente} className="border-b border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50">
+                      <td className="py-3 px-4 font-medium text-gray-900 dark:text-white">{index + 1}º</td>
+                      <td className="py-3 px-4">
+                        <Avatar className="h-8 w-8">
+                          <AvatarImage src={atendente.foto_url} alt={atendente.atendente} />
+                          <AvatarFallback className="text-xs bg-purple-100 dark:bg-purple-900/20 text-purple-700 dark:text-purple-400">
+                            {atendente.atendente.split(' ').map(n => n[0]).join('').substring(0, 2)}
+                          </AvatarFallback>
+                        </Avatar>
+                      </td>
+                      <td className="py-3 px-4 font-medium text-gray-900 dark:text-white">{atendente.atendente}</td>
+                      <td className="py-3 px-4 text-gray-700 dark:text-gray-300">{atendente.totalAtendimentos}</td>
+                      <td className="py-3 px-4 text-gray-700 dark:text-gray-300">{atendente.tempoMedio.toFixed(2)} min</td>
+                      <td className="py-3 px-4 font-semibold text-purple-600 dark:text-purple-400">
+                        {atendente.eficiencia.toFixed(2)}
+                      </td>
+                    </tr>
+                  ))}
+                  {allActiveAttendants.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="py-8 text-center text-gray-500 dark:text-gray-400">
+                        Nenhum atendente ativo encontrado
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
             </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-green-600">
-              <Clock className="h-5 w-5" />
-              Atualização Automática
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              <div className="flex items-center gap-2 text-sm text-green-600">
-                <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                Atualização automática a cada 5 minutos
+            
+            {allActiveAttendants.length > 10 && (
+              <div className="mt-4 text-center">
+                <button
+                  onClick={() => setIsFullScreen(true)}
+                  className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
+                >
+                  Ver Todos os {allActiveAttendants.length} Atendentes
+                </button>
               </div>
-              <div className="text-xs text-gray-600">
-                Os dados são atualizados automaticamente para garantir informações sempre atuais sobre a performance dos atendentes.
-              </div>
-            </div>
+            )}
           </CardContent>
         </Card>
       </div>

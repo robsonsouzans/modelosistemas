@@ -4,15 +4,14 @@ import { Button } from '@/components/ui/button';
 import { LogOut, User, Bell, Settings, Moon, Sun, Mail } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { useSidebarContext } from '@/contexts/SidebarContext';
 
 const pageNames = {
   '/admin': 'Dashboard',
   '/admin/atendimentos': 'Atendimentos',
-  '/admin/monitor': 'Monitor',
   '/admin/feedbacks': 'Feedbacks',
   '/admin/attendants': 'Atendentes',
   '/admin/management': 'Gerenciamento',
+  '/admin/monitor': 'Monitor',
   '/admin/settings': 'Configurações'
 };
 
@@ -21,7 +20,6 @@ export function Header() {
   const [isDark, setIsDark] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
-  const { isCollapsed } = useSidebarContext();
 
   // Apply theme to document
   useEffect(() => {
@@ -39,7 +37,7 @@ export function Header() {
   };
 
   return (
-    <div className={`fixed top-0 right-0 z-50 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 transition-all duration-300 ${isCollapsed ? 'left-16' : 'left-64'}`}>
+    <div className="fixed top-0 left-64 right-0 z-50 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
       <div className="px-6 py-4">
         <div className="flex items-center justify-between">
           {/* Page Title */}
