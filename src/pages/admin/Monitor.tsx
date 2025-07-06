@@ -1,9 +1,10 @@
+
 import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { supabase } from '@/integrations/supabase/client';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
-import { Award, Trophy, Target, TrendingUp, Calendar, Users, Timer, BarChart3 } from 'lucide-react';
+import { Award, Trophy, Target, TrendingUp, Calendar, Users, Timer, BarChart3, Maximize2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { cn } from '@/lib/utils';
@@ -84,7 +85,7 @@ export default function Monitor() {
         return;
       }
 
-      // Buscar atendimentos no período específico
+      // Buscar TODOS os atendimentos no período específico sem limitação
       let query = supabase
         .from('atendimentos')
         .select('*')
@@ -95,6 +96,7 @@ export default function Monitor() {
       const activeAttendantNames = activeAttendants.map(a => a.name);
       query = query.in('atendente', activeAttendantNames);
 
+      // REMOVIDO: .limit() para buscar TODOS os registros
       const { data: atendimentos, error } = await query;
 
       if (error) {
@@ -102,7 +104,7 @@ export default function Monitor() {
         throw error;
       }
 
-      console.log(`Atendimentos encontrados para o período: ${atendimentos?.length || 0}`);
+      console.log(`TOTAL de atendimentos encontrados para o período: ${atendimentos?.length || 0}`);
 
       if (!atendimentos || atendimentos.length === 0) {
         console.log('Nenhum atendimento encontrado para o período');
@@ -155,8 +157,11 @@ export default function Monitor() {
       rankingsWithData.sort((a, b) => b.eficiencia - a.eficiencia);
       allActivePerformance.sort((a, b) => b.eficiencia - a.eficiencia);
 
-      console.log('Rankings calculados:', rankingsWithData.length);
-      console.log('Todos atendentes ativos:', allActivePerformance.length);
+      console.log('Rankings calculados com TODOS os dados:', {
+        totalRegistros: atendimentos.length,
+        rankingsComDados: rankingsWithData.length,
+        todosAtendentesAtivos: allActivePerformance.length
+      });
 
       setRankings(rankingsWithData);
       setAllActiveAttendants(allActivePerformance);
@@ -319,16 +324,26 @@ export default function Monitor() {
             <p className="text-gray-600 dark:text-gray-400">Ranking {getPeriodLabel()} dos Atendentes</p>
           </div>
           
-          <Select value={selectedPeriod} onValueChange={setSelectedPeriod}>
-            <SelectTrigger className="w-40 border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent className="bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700">
-              <SelectItem value="weekly">Semanal</SelectItem>
-              <SelectItem value="monthly">Mensal</SelectItem>
-              <SelectItem value="yearly">Anual</SelectItem>
-            </SelectContent>
-          </Select>
+          <div className="flex items-center gap-4">
+            <Select value={selectedPeriod} onValueChange={setSelectedPeriod}>
+              <SelectTrigger className="w-40 border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700">
+                <SelectItem value="weekly">Semanal</SelectItem>
+                <SelectItem value="monthly">Mensal</SelectItem>
+                <SelectItem value="yearly">Anual</SelectItem>
+              </SelectContent>
+            </Select>
+            
+            <button
+              onClick={() => setIsFullScreen(true)}
+              className="flex items-center gap-2 px-3 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
+            >
+              <Maximize2 className="h-4 w-4" />
+              Tela Cheia
+            </button>
+          </div>
         </div>
 
         {/* Métricas Principais */}
@@ -385,54 +400,56 @@ export default function Monitor() {
           </Card>
         </div>
 
-        {/* Ranking Principal */}
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-          {/* Top 3 */}
-          <Card className="bg-white dark:bg-gray-800 shadow-sm border border-gray-200 dark:border-gray-700">
-            <CardHeader className="pb-4">
-              <CardTitle className="flex items-center gap-2 text-lg font-semibold text-gray-900 dark:text-white">
-                <Trophy className="h-5 w-5 text-yellow-500" />
-                Top 3 - {getPeriodLabel()}
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                {rankings.slice(0, 3).map((atendente, index) => (
-                  <div key={atendente.atendente} className="flex items-center gap-4 p-4 rounded-lg bg-gray-50 dark:bg-gray-700/50">
-                    <div className="flex-shrink-0">
-                      <span className={`inline-flex items-center justify-center w-8 h-8 rounded-full text-sm font-bold ${
-                        index === 0 ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/20 dark:text-yellow-400' :
-                        index === 1 ? 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300' :
-                        'bg-orange-100 text-orange-800 dark:bg-orange-900/20 dark:text-orange-400'
-                      }`}>
-                        {index + 1}
-                      </span>
-                    </div>
-                    <Avatar className="h-10 w-10">
-                      <AvatarImage src={atendente.foto_url} alt={atendente.atendente} />
-                      <AvatarFallback className="bg-purple-100 dark:bg-purple-900/20 text-purple-700 dark:text-purple-400">
-                        {atendente.atendente.split(' ').map(n => n[0]).join('').substring(0, 2)}
-                      </AvatarFallback>
-                    </Avatar>
-                    <div className="flex-1">
-                      <h3 className="font-semibold text-gray-900 dark:text-white">{atendente.atendente}</h3>
-                      <div className="flex items-center gap-4 text-sm text-gray-600 dark:text-gray-400">
-                        <span>{atendente.totalAtendimentos} atendimentos</span>
-                        <span>IEA: {atendente.eficiencia.toFixed(2)}</span>
-                        <span>{atendente.tempoMedio.toFixed(1)} min</span>
+        {/* Top 3 Cards Coloridos */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {rankings.slice(0, 3).map((atendente, index) => (
+            <Card key={atendente.atendente} className={`shadow-lg ${
+              index === 0 ? 'bg-gradient-to-br from-yellow-400 to-yellow-500 text-white' :
+              index === 1 ? 'bg-gradient-to-br from-gray-400 to-gray-500 text-white' :
+              'bg-gradient-to-br from-orange-400 to-orange-500 text-white'
+            }`}>
+              <CardContent className="p-6">
+                <div className="flex items-center gap-4">
+                  <div className="flex-shrink-0">
+                    <span className={`inline-flex items-center justify-center w-10 h-10 rounded-full text-lg font-bold ${
+                      index === 0 ? 'bg-white/20 text-white' :
+                      index === 1 ? 'bg-white/20 text-white' :
+                      'bg-white/20 text-white'
+                    }`}>
+                      {index + 1}
+                    </span>
+                  </div>
+                  <Avatar className="h-12 w-12 border-2 border-white/30">
+                    <AvatarImage src={atendente.foto_url} alt={atendente.atendente} />
+                    <AvatarFallback className="bg-white/20 text-white font-semibold">
+                      {atendente.atendente.split(' ').map(n => n[0]).join('').substring(0, 2)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="flex-1">
+                    <h3 className="font-bold text-lg">{atendente.atendente}</h3>
+                    <div className="grid grid-cols-3 gap-2 mt-2 text-sm opacity-90">
+                      <div>
+                        <p className="font-medium">{atendente.totalAtendimentos}</p>
+                        <p className="text-xs opacity-75">Atendimentos</p>
+                      </div>
+                      <div>
+                        <p className="font-medium">{atendente.eficiencia.toFixed(2)}</p>
+                        <p className="text-xs opacity-75">IEA</p>
+                      </div>
+                      <div>
+                        <p className="font-medium">{atendente.tempoMedio.toFixed(1)}</p>
+                        <p className="text-xs opacity-75">Tempo (min)</p>
                       </div>
                     </div>
                   </div>
-                ))}
-                {rankings.length === 0 && (
-                  <div className="text-center py-8 text-gray-500 dark:text-gray-400">
-                    Nenhum atendimento encontrado no período {getPeriodLabel().toLowerCase()}
-                  </div>
-                )}
-              </div>
-            </CardContent>
-          </Card>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
 
+        {/* Gráfico e Ranking */}
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
           {/* Gráfico de Performance */}
           <Card className="bg-white dark:bg-gray-800 shadow-sm border border-gray-200 dark:border-gray-700">
             <CardHeader className="pb-4">
@@ -478,78 +495,52 @@ export default function Monitor() {
               )}
             </CardContent>
           </Card>
-        </div>
 
-        {/* Demais Atendentes */}
-        <Card className="bg-white dark:bg-gray-800 shadow-sm border border-gray-200 dark:border-gray-700">
-          <CardHeader className="pb-4 flex flex-row items-center justify-between">
-            <CardTitle className="flex items-center gap-2 text-lg font-semibold text-gray-900 dark:text-white">
-              <Users className="h-5 w-5 text-purple-600" />
-              Todos os Atendentes Ativos - {getPeriodLabel()}
-            </CardTitle>
-            <button
-              onClick={() => setIsFullScreen(true)}
-              className="px-3 py-1 text-sm bg-purple-600 text-white rounded-md hover:bg-purple-700 transition-colors"
-            >
-              Ver Tela Cheia
-            </button>
-          </CardHeader>
-          <CardContent>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50">
-                    <th className="text-left py-3 px-4 font-semibold text-gray-700 dark:text-gray-300">Pos.</th>
-                    <th className="text-left py-3 px-4 font-semibold text-gray-700 dark:text-gray-300">Foto</th>
-                    <th className="text-left py-3 px-4 font-semibold text-gray-700 dark:text-gray-300">Atendente</th>
-                    <th className="text-left py-3 px-4 font-semibold text-gray-700 dark:text-gray-300">Atendimentos</th>
-                    <th className="text-left py-3 px-4 font-semibold text-gray-700 dark:text-gray-300">Tempo Médio</th>
-                    <th className="text-left py-3 px-4 font-semibold text-gray-700 dark:text-gray-300">IEA</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {allActiveAttendants.slice(0, 10).map((atendente, index) => (
-                    <tr key={atendente.atendente} className="border-b border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50">
-                      <td className="py-3 px-4 font-medium text-gray-900 dark:text-white">{index + 1}º</td>
-                      <td className="py-3 px-4">
-                        <Avatar className="h-8 w-8">
-                          <AvatarImage src={atendente.foto_url} alt={atendente.atendente} />
-                          <AvatarFallback className="text-xs bg-purple-100 dark:bg-purple-900/20 text-purple-700 dark:text-purple-400">
-                            {atendente.atendente.split(' ').map(n => n[0]).join('').substring(0, 2)}
-                          </AvatarFallback>
-                        </Avatar>
-                      </td>
-                      <td className="py-3 px-4 font-medium text-gray-900 dark:text-white">{atendente.atendente}</td>
-                      <td className="py-3 px-4 text-gray-700 dark:text-gray-300">{atendente.totalAtendimentos}</td>
-                      <td className="py-3 px-4 text-gray-700 dark:text-gray-300">{atendente.tempoMedio.toFixed(2)} min</td>
-                      <td className="py-3 px-4 font-semibold text-purple-600 dark:text-purple-400">
-                        {atendente.eficiencia.toFixed(2)}
-                      </td>
-                    </tr>
-                  ))}
-                  {allActiveAttendants.length === 0 && (
-                    <tr>
-                      <td colSpan={6} className="py-8 text-center text-gray-500 dark:text-gray-400">
-                        Nenhum atendente ativo encontrado
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-            
-            {allActiveAttendants.length > 10 && (
-              <div className="mt-4 text-center">
-                <button
-                  onClick={() => setIsFullScreen(true)}
-                  className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
-                >
-                  Ver Todos os {allActiveAttendants.length} Atendentes
-                </button>
+          {/* Ranking Lateral */}
+          <Card className="bg-white dark:bg-gray-800 shadow-sm border border-gray-200 dark:border-gray-700">
+            <CardHeader className="pb-4">
+              <CardTitle className="flex items-center gap-2 text-lg font-semibold text-gray-900 dark:text-white">
+                <Users className="h-5 w-5 text-purple-600" />
+                Ranking - {getPeriodLabel()}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3 max-h-80 overflow-y-auto">
+                {rankings.map((atendente, index) => (
+                  <div key={atendente.atendente} className="flex items-center gap-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-700/50">
+                    <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold ${
+                      index === 0 ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/20 dark:text-yellow-400' :
+                      index === 1 ? 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300' :
+                      index === 2 ? 'bg-orange-100 text-orange-800 dark:bg-orange-900/20 dark:text-orange-400' :
+                      'bg-purple-100 text-purple-800 dark:bg-purple-900/20 dark:text-purple-400'
+                    }`}>
+                      {index + 1}
+                    </span>
+                    <Avatar className="h-8 w-8">
+                      <AvatarImage src={atendente.foto_url} alt={atendente.atendente} />
+                      <AvatarFallback className="text-xs bg-purple-100 dark:bg-purple-900/20 text-purple-700 dark:text-purple-400">
+                        {atendente.atendente.split(' ').map(n => n[0]).join('').substring(0, 2)}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div className="flex-1 min-w-0">
+                      <h4 className="font-medium text-gray-900 dark:text-white truncate">{atendente.atendente}</h4>
+                      <div className="flex items-center gap-3 text-xs text-gray-600 dark:text-gray-400 mt-1">
+                        <span>{atendente.totalAtendimentos} atend.</span>
+                        <span>IEA: {atendente.eficiencia.toFixed(1)}</span>
+                        <span>{atendente.tempoMedio.toFixed(1)}min</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {rankings.length === 0 && (
+                  <div className="text-center py-8 text-gray-500 dark:text-gray-400">
+                    Nenhum atendimento encontrado no período {getPeriodLabel().toLowerCase()}
+                  </div>
+                )}
               </div>
-            )}
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+        </div>
       </div>
     </div>
   );

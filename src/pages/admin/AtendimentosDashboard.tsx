@@ -329,7 +329,7 @@ export default function AtendimentosDashboard() {
 
       if (error) throw error;
 
-      console.log(`Atendimentos encontrados com filtros aplicados: ${atendimentos?.length || 0}`);
+      console.log(`TOTAL de atendimentos encontrados com filtros aplicados: ${atendimentos?.length || 0}`);
 
       const totalAtendimentos = atendimentos?.length || 0;
 
@@ -460,13 +460,14 @@ export default function AtendimentosDashboard() {
         pendentes
       });
 
-      console.log('Dados carregados com sucesso:', {
+      console.log('Dados carregados com TODOS os registros filtrados:', {
         totalAtendimentos,
         finalizados,
         emAndamento,
         pendentes,
         atendentePerformance: atendentePerformance.length,
-        allActivePerformance: allActivePerformance.length
+        allActivePerformance: allActivePerformance.length,
+        empresas: empresasData.length
       });
 
     } catch (error) {
@@ -632,7 +633,7 @@ export default function AtendimentosDashboard() {
                   </div>
                   <p className="text-3xl font-bold">{stats.totalAtendimentos.toLocaleString()}</p>
                   <div className="flex items-center mt-2">
-                    <span className="text-sm bg-white/20 px-2 py-1 rounded-full">Filtrado</span>
+                    <span className="text-sm bg-white/20 px-2 py-1 rounded-full">Todos os registros</span>
                   </div>
                 </div>
               </div>
@@ -693,7 +694,7 @@ export default function AtendimentosDashboard() {
 
         <Card className="bg-white dark:bg-gray-800 shadow-sm border border-gray-200 dark:border-gray-700">
           <CardHeader className="pb-4">
-            <CardTitle className="text-lg font-semibold text-gray-900 dark:text-white">Status dos Atendimentos (Filtrado)</CardTitle>
+            <CardTitle className="text-lg font-semibold text-gray-900 dark:text-white">Status dos Atendimentos (Todos os registros filtrados)</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
@@ -757,7 +758,7 @@ export default function AtendimentosDashboard() {
             <CardHeader className="pb-4">
               <CardTitle className="flex items-center gap-2 text-lg font-semibold text-gray-900 dark:text-white">
                 <Users className="h-5 w-5 text-purple-600" />
-                Performance por Atendente (Filtrado)
+                Performance por Atendente (Todos os registros filtrados)
               </CardTitle>
             </CardHeader>
             <CardContent>
@@ -795,7 +796,7 @@ export default function AtendimentosDashboard() {
 
           <Card className="bg-white dark:bg-gray-800 shadow-sm border border-gray-200 dark:border-gray-700">
             <CardHeader className="pb-4">
-              <CardTitle className="text-lg font-semibold text-gray-900 dark:text-white">Progresso (Filtrado)</CardTitle>
+              <CardTitle className="text-lg font-semibold text-gray-900 dark:text-white">Progresso (Todos os registros filtrados)</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="flex flex-col items-center space-y-4">
@@ -828,7 +829,7 @@ export default function AtendimentosDashboard() {
                     <div className="text-center">
                       <TrendingUp className="h-6 w-6 text-purple-600 mx-auto mb-1" />
                       <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Total</p>
-                      <p className="text-lg font-bold text-gray-900 dark:text-white">{stats.totalAtendimentos}</p>
+                      <p className="text-lg font-bold text-gray-900 dark:text-white">{stats.totalAtendimentos.toLocaleString()}</p>
                     </div>
                   </div>
                 </div>
