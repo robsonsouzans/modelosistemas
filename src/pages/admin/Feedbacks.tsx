@@ -93,7 +93,7 @@ export default function Feedbacks() {
       const { data: allFeedbacks } = await supabase
         .from('feedbacks')
         .select('attendant, module')
-        .limit(5000); // Get enough data to extract unique values
+        .limit(5000);
 
       if (allFeedbacks) {
         const uniqueAttendants = [...new Set(allFeedbacks.map(f => f.attendant))];
