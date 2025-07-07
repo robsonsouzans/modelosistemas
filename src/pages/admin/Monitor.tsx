@@ -3,11 +3,10 @@ import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { supabase } from '@/integrations/supabase/client';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
-import { Award, Trophy, Target, TrendingUp, Calendar, Users, Timer, BarChart3, Maximize2 } from 'lucide-react';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { Award, Trophy, Target, TrendingUp, Timer, BarChart3, Maximize2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { cn } from '@/lib/utils';
 
 interface AtendentePerformance {
   atendente: string;
@@ -24,10 +23,25 @@ interface RankingStats {
   tempoMedio: number;
 }
 
+interface AtendimentoResumo {
+  atendente: string;
+  periodo_tipo: string;
+  data_inicio: string;
+  data_fim: string;
+  total_atendimentos: number;
+  tempo_total_minutos: number;
+  tempo_medio_minutos: number;
+  finalizados: number;
+  em_andamento: number;
+  pendentes: number;
+  taxa_resolucao: number;
+  eficiencia_iea: number;
+}
+
 const COLORS = ['#8B5CF6', '#A855F7', '#9333EA', '#7C3AED', '#6D28D9', '#5B21B6'];
 
 export default function Monitor() {
-  const [selectedPeriod, setSelectedPeriod] = useState('weekly');
+  const [selectedPeriod, setSelectedPeriod] = useState('semanal');
   const [rankings, setRankings] = useState<AtendentePerformance[]>([]);
   const [allActiveAttendants, setAllActiveAttendants] = useState<AtendentePerformance[]>([]);
   const [stats, setStats] = useState<RankingStats>({
@@ -42,34 +56,9 @@ export default function Monitor() {
     loadRankings();
   }, [selectedPeriod]);
 
-  const getDateRange = () => {
-    const now = new Date();
-    let startDate = new Date();
-    
-    switch (selectedPeriod) {
-      case 'weekly':
-        startDate.setDate(now.getDate() - 7);
-        break;
-      case 'monthly':
-        startDate.setDate(now.getDate() - 30);
-        break;
-      case 'yearly':
-        startDate.setFullYear(now.getFullYear() - 1);
-        break;
-      default:
-        startDate.setDate(now.getDate() - 7);
-    }
-    
-    return {
-      startDate: startDate.toISOString().split('T')[0],
-      endDate: now.toISOString().split('T')[0]
-    };
-  };
-
   const loadRankings = async () => {
     try {
-      const { startDate, endDate } = getDateRange();
-      console.log('Carregando rankings para período:', { selectedPeriod, startDate, endDate });
+      console.log('Carregando rankings para período:', selectedPeriod);
 
       // Primeiro, carregue todos os atendentes ativos
       const { data: activeAttendants } = await supabase
@@ -85,30 +74,23 @@ export default function Monitor() {
         return;
       }
 
-      // Buscar TODOS os atendimentos no período específico sem limitação
-      let query = supabase
-        .from('atendimentos')
+      // Buscar dados da tabela de resumos
+      const { data: resumos, error } = await supabase
+        .from('atendimentos_resumo')
         .select('*')
-        .gte('data', startDate)
-        .lte('data', endDate);
-
-      // Filtrar apenas atendentes ativos
-      const activeAttendantNames = activeAttendants.map(a => a.name);
-      query = query.in('atendente', activeAttendantNames);
-
-      // REMOVIDO: .limit() para buscar TODOS os registros
-      const { data: atendimentos, error } = await query;
+        .eq('periodo_tipo', selectedPeriod)
+        .order('data_inicio', { ascending: false });
 
       if (error) {
-        console.error('Erro ao buscar atendimentos:', error);
+        console.error('Erro ao buscar resumos:', error);
         throw error;
       }
 
-      console.log(`TOTAL de atendimentos encontrados para o período: ${atendimentos?.length || 0}`);
+      console.log(`Resumos encontrados para ${selectedPeriod}:`, resumos?.length || 0);
 
-      if (!atendimentos || atendimentos.length === 0) {
-        console.log('Nenhum atendimento encontrado para o período');
-        // Ainda mostrar todos os atendentes ativos, mas com valores zerados
+      if (!resumos || resumos.length === 0) {
+        console.log('Nenhum resumo encontrado para o período');
+        // Mostrar todos os atendentes ativos, mas com valores zerados
         const emptyPerformance: AtendentePerformance[] = activeAttendants.map(attendant => ({
           atendente: attendant.name,
           totalAtendimentos: 0,
@@ -124,28 +106,54 @@ export default function Monitor() {
         return;
       }
 
-      // Calcular performance por atendente
-      const atendenteMap = new Map<string, { total: number; tempo: number; }>();
-      
-      atendimentos.forEach(atendimento => {
-        const current = atendenteMap.get(atendimento.atendente) || { total: 0, tempo: 0 };
-        current.total++;
-        current.tempo += atendimento.tempo_total || 0;
-        atendenteMap.set(atendimento.atendente, current);
+      // Agrupar resumos por atendente (somar dados de diferentes períodos)
+      const atendenteMap = new Map<string, {
+        totalAtendimentos: number;
+        tempoTotal: number;
+        eficienciaTotal: number;
+        periodos: number;
+      }>();
+
+      resumos.forEach((resumo: AtendimentoResumo) => {
+        const current = atendenteMap.get(resumo.atendente) || { 
+          totalAtendimentos: 0, 
+          tempoTotal: 0, 
+          eficienciaTotal: 0, 
+          periodos: 0 
+        };
+        
+        current.totalAtendimentos += resumo.total_atendimentos;
+        current.tempoTotal += resumo.tempo_total_minutos;
+        current.eficienciaTotal += resumo.eficiencia_iea;
+        current.periodos += 1;
+        
+        atendenteMap.set(resumo.atendente, current);
       });
 
       // Criar performance para TODOS os atendentes ativos
       const allActivePerformance: AtendentePerformance[] = activeAttendants.map(attendant => {
-        const data = atendenteMap.get(attendant.name) || { total: 0, tempo: 0 };
-        const tempoMedio = data.total > 0 ? data.tempo / data.total : 0;
-        const eficiencia = tempoMedio > 0 ? data.total / tempoMedio : 0;
+        const data = atendenteMap.get(attendant.name);
+        
+        if (!data || data.totalAtendimentos === 0) {
+          return {
+            atendente: attendant.name,
+            totalAtendimentos: 0,
+            tempoMedio: 0,
+            tempoTotal: 0,
+            eficiencia: 0,
+            foto_url: attendant.photo_url
+          };
+        }
+
+        const tempoMedio = data.tempoTotal / data.totalAtendimentos;
+        const eficienciaMedia = data.eficienciaTotal / data.periodos;
         
         return {
           atendente: attendant.name,
-          totalAtendimentos: data.total,
+          totalAtendimentos: data.totalAtendimentos,
           tempoMedio,
-          tempoTotal: data.tempo,
-          eficiencia,
+          tempoTotal: data.tempoTotal,
+          eficiencia: eficienciaMedia,
           foto_url: attendant.photo_url
         };
       });
@@ -157,8 +165,7 @@ export default function Monitor() {
       rankingsWithData.sort((a, b) => b.eficiencia - a.eficiencia);
       allActivePerformance.sort((a, b) => b.eficiencia - a.eficiencia);
 
-      console.log('Rankings calculados com TODOS os dados:', {
-        totalRegistros: atendimentos.length,
+      console.log('Rankings calculados:', {
         rankingsComDados: rankingsWithData.length,
         todosAtendentesAtivos: allActivePerformance.length
       });
@@ -167,9 +174,10 @@ export default function Monitor() {
       setAllActiveAttendants(allActivePerformance);
 
       // Calcular estatísticas gerais
-      const totalAtendimentos = atendimentos.length;
-      const tempoTotal = atendimentos.reduce((sum, a) => sum + (a.tempo_total || 0), 0);
-      const tempoMedio = totalAtendimentos > 0 ? tempoTotal / totalAtendimentos : 0;
+      const totalAtendimentos = rankingsWithData.reduce((sum, a) => sum + a.totalAtendimentos, 0);
+      const tempoMedio = rankingsWithData.length > 0 
+        ? rankingsWithData.reduce((sum, a) => sum + a.tempoMedio, 0) / rankingsWithData.length 
+        : 0;
       const ieaMedia = rankingsWithData.length > 0 
         ? rankingsWithData.reduce((sum, a) => sum + a.eficiencia, 0) / rankingsWithData.length 
         : 0;
@@ -192,9 +200,10 @@ export default function Monitor() {
 
   const getPeriodLabel = () => {
     switch (selectedPeriod) {
-      case 'weekly': return 'Semanal';
-      case 'monthly': return 'Mensal';
-      case 'yearly': return 'Anual';
+      case 'diario': return 'Diário';
+      case 'semanal': return 'Semanal';
+      case 'mensal': return 'Mensal';
+      case 'anual': return 'Anual';
       default: return 'Semanal';
     }
   };
@@ -330,9 +339,10 @@ export default function Monitor() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent className="bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700">
-                <SelectItem value="weekly">Semanal</SelectItem>
-                <SelectItem value="monthly">Mensal</SelectItem>
-                <SelectItem value="yearly">Anual</SelectItem>
+                <SelectItem value="diario">Diário</SelectItem>
+                <SelectItem value="semanal">Semanal</SelectItem>
+                <SelectItem value="mensal">Mensal</SelectItem>
+                <SelectItem value="anual">Anual</SelectItem>
               </SelectContent>
             </Select>
             
