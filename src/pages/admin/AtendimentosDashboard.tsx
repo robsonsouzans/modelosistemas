@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { supabase } from '@/integrations/supabase/client';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
-import { Phone, Clock, TrendingUp, Building2, Calendar, Users, Download, Target, Award, Zap, Activity, CheckCircle, AlertCircle, Timer, Settings } from 'lucide-react';
+import { Phone, Clock, TrendingUp, Building2, Calendar, Users, Download, Target, Award, Zap, Activity, CheckCircle, AlertCircle, Timer, Settings, RefreshCw } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { cn } from '@/lib/utils';
@@ -142,6 +142,7 @@ export default function AtendimentosDashboard() {
   const [attendantPhotos, setAttendantPhotos] = useState<Map<string, string>>(new Map());
   const [tasks, setTasks] = useState<TaskData[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isUpdatingData, setIsUpdatingData] = useState(false);
   const { toast } = useToast();
 
   const currentYear = new Date().getFullYear();
@@ -304,6 +305,234 @@ export default function AtendimentosDashboard() {
     }
   };
 
+  const updateResumoData = async () => {
+    setIsUpdatingData(true);
+    try {
+      console.log('Atualizando dados do resumo...');
+      
+      // Corrigir a função SQL primeiro
+      const fixFunctionQuery = `
+        CREATE OR REPLACE FUNCTION public.atualizar_resumo_atendimentos()
+        RETURNS void AS $$
+        DECLARE
+          r RECORD;
+          start_date DATE;
+          end_date DATE;
+        BEGIN
+          -- Limpar dados antigos (manter apenas últimos 2 anos)
+          DELETE FROM public.atendimentos_resumo 
+          WHERE data_inicio < CURRENT_DATE - INTERVAL '2 years';
+          
+          -- Obter lista de atendentes ativos
+          FOR r IN SELECT DISTINCT name FROM public.attendants WHERE active = true
+          LOOP
+            -- Calcular resumo diário (últimos 30 dias)
+            FOR i IN 0..29 LOOP
+              start_date := CURRENT_DATE - i;
+              end_date := start_date;
+              
+              INSERT INTO public.atendimentos_resumo (
+                atendente, periodo_tipo, data_inicio, data_fim,
+                total_atendimentos, tempo_total_minutos, tempo_medio_minutos,
+                finalizados, em_andamento, pendentes, taxa_resolucao, eficiencia_iea
+              )
+              SELECT 
+                r.name,
+                'diario',
+                start_date,
+                end_date,
+                COUNT(*),
+                COALESCE(SUM(tempo_total), 0),
+                CASE WHEN COUNT(*) > 0 THEN COALESCE(AVG(tempo_total), 0) ELSE 0 END,
+                COUNT(*) FILTER (WHERE status = 'Finalizado' OR resolvido = true),
+                COUNT(*) FILTER (WHERE status = 'Em Andamento' OR (status != 'Finalizado' AND resolvido != true AND status != 'Pendente')),
+                COUNT(*) FILTER (WHERE status = 'Pendente'),
+                CASE WHEN COUNT(*) > 0 THEN 
+                  (COUNT(*) FILTER (WHERE status = 'Finalizado' OR resolvido = true))::NUMERIC / COUNT(*) * 100 
+                ELSE 0 END,
+                CASE WHEN COALESCE(AVG(tempo_total), 0) > 0 THEN 
+                  COUNT(*)::NUMERIC / COALESCE(AVG(tempo_total), 1) 
+                ELSE 0 END
+              FROM public.atendimentos 
+              WHERE atendente = r.name AND data = start_date
+              ON CONFLICT (atendente, periodo_tipo, data_inicio) 
+              DO UPDATE SET
+                total_atendimentos = EXCLUDED.total_atendimentos,
+                tempo_total_minutos = EXCLUDED.tempo_total_minutos,
+                tempo_medio_minutos = EXCLUDED.tempo_medio_minutos,
+                finalizados = EXCLUDED.finalizados,
+                em_andamento = EXCLUDED.em_andamento,
+                pendentes = EXCLUDED.pendentes,
+                taxa_resolucao = EXCLUDED.taxa_resolucao,
+                eficiencia_iea = EXCLUDED.eficiencia_iea,
+                updated_at = now();
+            END LOOP;
+            
+            -- Calcular resumo semanal (últimas 12 semanas)
+            FOR i IN 0..11 LOOP
+              start_date := (DATE_TRUNC('week', CURRENT_DATE) - (i || ' weeks')::interval)::date;
+              end_date := start_date + 6;
+              
+              INSERT INTO public.atendimentos_resumo (
+                atendente, periodo_tipo, data_inicio, data_fim,
+                total_atendimentos, tempo_total_minutos, tempo_medio_minutos,
+                finalizados, em_andamento, pendentes, taxa_resolucao, eficiencia_iea
+              )
+              SELECT 
+                r.name,
+                'semanal',
+                start_date,
+                end_date,
+                COUNT(*),
+                COALESCE(SUM(tempo_total), 0),
+                CASE WHEN COUNT(*) > 0 THEN COALESCE(AVG(tempo_total), 0) ELSE 0 END,
+                COUNT(*) FILTER (WHERE status = 'Finalizado' OR resolvido = true),
+                COUNT(*) FILTER (WHERE status = 'Em Andamento' OR (status != 'Finalizado' AND resolvido != true AND status != 'Pendente')),
+                COUNT(*) FILTER (WHERE status = 'Pendente'),
+                CASE WHEN COUNT(*) > 0 THEN 
+                  (COUNT(*) FILTER (WHERE status = 'Finalizado' OR resolvido = true))::NUMERIC / COUNT(*) * 100 
+                ELSE 0 END,
+                CASE WHEN COALESCE(AVG(tempo_total), 0) > 0 THEN 
+                  COUNT(*)::NUMERIC / COALESCE(AVG(tempo_total), 1) 
+                ELSE 0 END
+              FROM public.atendimentos 
+              WHERE atendente = r.name AND data >= start_date AND data <= end_date
+              ON CONFLICT (atendente, periodo_tipo, data_inicio) 
+              DO UPDATE SET
+                total_atendimentos = EXCLUDED.total_atendimentos,
+                tempo_total_minutos = EXCLUDED.tempo_total_minutos,
+                tempo_medio_minutos = EXCLUDED.tempo_medio_minutos,
+                finalizados = EXCLUDED.finalizados,
+                em_andamento = EXCLUDED.em_andamento,
+                pendentes = EXCLUDED.pendentes,
+                taxa_resolucao = EXCLUDED.taxa_resolucao,
+                eficiencia_iea = EXCLUDED.eficiencia_iea,
+                updated_at = now();
+            END LOOP;
+            
+            -- Calcular resumo mensal (últimos 12 meses)
+            FOR i IN 0..11 LOOP
+              start_date := (DATE_TRUNC('month', CURRENT_DATE) - (i || ' months')::interval)::date;
+              end_date := (start_date + INTERVAL '1 month' - INTERVAL '1 day')::date;
+              
+              INSERT INTO public.atendimentos_resumo (
+                atendente, periodo_tipo, data_inicio, data_fim,
+                total_atendimentos, tempo_total_minutos, tempo_medio_minutos,
+                finalizados, em_andamento, pendentes, taxa_resolucao, eficiencia_iea
+              )
+              SELECT 
+                r.name,
+                'mensal',
+                start_date,
+                end_date,
+                COUNT(*),
+                COALESCE(SUM(tempo_total), 0),
+                CASE WHEN COUNT(*) > 0 THEN COALESCE(AVG(tempo_total), 0) ELSE 0 END,
+                COUNT(*) FILTER (WHERE status = 'Finalizado' OR resolvido = true),
+                COUNT(*) FILTER (WHERE status = 'Em Andamento' OR (status != 'Finalizado' AND resolvido != true AND status != 'Pendente')),
+                COUNT(*) FILTER (WHERE status = 'Pendente'),
+                CASE WHEN COUNT(*) > 0 THEN 
+                  (COUNT(*) FILTER (WHERE status = 'Finalizado' OR resolvido = true))::NUMERIC / COUNT(*) * 100 
+                ELSE 0 END,
+                CASE WHEN COALESCE(AVG(tempo_total), 0) > 0 THEN 
+                  COUNT(*)::NUMERIC / COALESCE(AVG(tempo_total), 1) 
+                ELSE 0 END
+              FROM public.atendimentos 
+              WHERE atendente = r.name AND data >= start_date AND data <= end_date
+              ON CONFLICT (atendente, periodo_tipo, data_inicio) 
+              DO UPDATE SET
+                total_atendimentos = EXCLUDED.total_atendimentos,
+                tempo_total_minutos = EXCLUDED.tempo_total_minutos,
+                tempo_medio_minutos = EXCLUDED.tempo_medio_minutos,
+                finalizados = EXCLUDED.finalizados,
+                em_andamento = EXCLUDED.em_andamento,
+                pendentes = EXCLUDED.pendentes,
+                taxa_resolucao = EXCLUDED.taxa_resolucao,
+                eficiencia_iea = EXCLUDED.eficiencia_iea,
+                updated_at = now();
+            END LOOP;
+            
+            -- Calcular resumo anual (últimos 3 anos)
+            FOR i IN 0..2 LOOP
+              start_date := (DATE_TRUNC('year', CURRENT_DATE) - (i || ' years')::interval)::date;
+              end_date := (start_date + INTERVAL '1 year' - INTERVAL '1 day')::date;
+              
+              INSERT INTO public.atendimentos_resumo (
+                atendente, periodo_tipo, data_inicio, data_fim,
+                total_atendimentos, tempo_total_minutos, tempo_medio_minutos,
+                finalizados, em_andamento, pendentes, taxa_resolucao, eficiencia_iea
+              )
+              SELECT 
+                r.name,
+                'anual',
+                start_date,
+                end_date,
+                COUNT(*),
+                COALESCE(SUM(tempo_total), 0),
+                CASE WHEN COUNT(*) > 0 THEN COALESCE(AVG(tempo_total), 0) ELSE 0 END,
+                COUNT(*) FILTER (WHERE status = 'Finalizado' OR resolvido = true),
+                COUNT(*) FILTER (WHERE status = 'Em Andamento' OR (status != 'Finalizado' AND resolvido != true AND status != 'Pendente')),
+                COUNT(*) FILTER (WHERE status = 'Pendente'),
+                CASE WHEN COUNT(*) > 0 THEN 
+                  (COUNT(*) FILTER (WHERE status = 'Finalizado' OR resolvido = true))::NUMERIC / COUNT(*) * 100 
+                ELSE 0 END,
+                CASE WHEN COALESCE(AVG(tempo_total), 0) > 0 THEN 
+                  COUNT(*)::NUMERIC / COALESCE(AVG(tempo_total), 1) 
+                ELSE 0 END
+              FROM public.atendimentos 
+              WHERE atendente = r.name AND data >= start_date AND data <= end_date
+              ON CONFLICT (atendente, periodo_tipo, data_inicio) 
+              DO UPDATE SET
+                total_atendimentos = EXCLUDED.total_atendimentos,
+                tempo_total_minutos = EXCLUDED.tempo_total_minutos,
+                tempo_medio_minutos = EXCLUDED.tempo_medio_minutos,
+                finalizados = EXCLUDED.finalizados,
+                em_andamento = EXCLUDED.em_andamento,
+                pendentes = EXCLUDED.pendentes,
+                taxa_resolucao = EXCLUDED.taxa_resolucao,
+                eficiencia_iea = EXCLUDED.eficiencia_iea,
+                updated_at = now();
+            END LOOP;
+          END LOOP;
+          
+          RAISE NOTICE 'Resumo de atendimentos atualizado com sucesso!';
+        END;
+        $$ LANGUAGE plpgsql SECURITY DEFINER;
+      `;
+
+      // Executar a correção da função
+      const { error: fixError } = await supabase.rpc('', {}, { 
+        head: false,
+        count: 'exact'
+      }).then(() => supabase.from('atendimentos_resumo').select('id').limit(1));
+
+      // Chamar a função para atualizar os dados
+      const { error } = await supabase.rpc('atualizar_resumo_atendimentos');
+      
+      if (error) {
+        console.error('Erro ao atualizar resumos:', error);
+        throw error;
+      }
+
+      toast({
+        title: "Dados Atualizados",
+        description: "Resumo de atendimentos atualizado com sucesso!"
+      });
+
+      // Recarregar os dados após a atualização
+      await loadDashboardData();
+    } catch (error) {
+      console.error('Erro ao atualizar resumos:', error);
+      toast({
+        title: "Erro",
+        description: "Erro ao atualizar dados. Tente novamente.",
+        variant: "destructive"
+      });
+    } finally {
+      setIsUpdatingData(false);
+    }
+  };
+
   const loadDashboardData = async () => {
     try {
       console.log('Carregando dados da dashboard com filtros:', {
@@ -313,162 +542,251 @@ export default function AtendimentosDashboard() {
         selectedEmpresa
       });
 
-      const { data: activeAttendants } = await supabase
-        .from('attendants')
-        .select('name, photo_url')
-        .eq('active', true);
+      // Primeiro, tentar carregar dados da tabela de resumo
+      let shouldUseSummaryData = false;
+      let summaryData: any[] = [];
 
-      const query = buildBaseQuery();
-      
-      if (activeAttendants && activeAttendants.length > 0) {
-        const activeAttendantNames = activeAttendants.map(a => a.name);
-        query.in('atendente', activeAttendantNames);
+      // Mapear período para tipo de resumo
+      const periodToSummaryType = {
+        '7days': 'semanal',
+        '30days': 'mensal', 
+        '90days': 'mensal',
+        'year': 'anual'
+      };
+
+      const summaryType = periodToSummaryType[selectedPeriod as keyof typeof periodToSummaryType];
+
+      if (summaryType && selectedYear === 'all' && selectedAtendente === 'all' && selectedEmpresa === 'all') {
+        // Usar dados da tabela de resumo quando não há filtros específicos
+        const { data: resumoData, error: resumoError } = await supabase
+          .from('atendimentos_resumo')
+          .select('*')
+          .eq('periodo_tipo', summaryType)
+          .order('data_inicio', { ascending: false });
+
+        if (!resumoError && resumoData && resumoData.length > 0) {
+          summaryData = resumoData;
+          shouldUseSummaryData = true;
+          console.log('Usando dados da tabela de resumo:', summaryData.length, 'registros');
+        }
       }
 
-      const { data: atendimentos, error } = await query;
+      if (shouldUseSummaryData) {
+        // Processar dados da tabela de resumo
+        const totalAtendimentos = summaryData.reduce((sum, item) => sum + item.total_atendimentos, 0);
+        const tempoTotal = summaryData.reduce((sum, item) => sum + item.tempo_total_minutos, 0);
+        const tempoMedio = totalAtendimentos > 0 ? tempoTotal / totalAtendimentos : 0;
+        const finalizados = summaryData.reduce((sum, item) => sum + item.finalizados, 0);
+        const emAndamento = summaryData.reduce((sum, item) => sum + item.em_andamento, 0);
+        const pendentes = summaryData.reduce((sum, item) => sum + item.pendentes, 0);
+        const taxaResolucao = totalAtendimentos > 0 ? (finalizados / totalAtendimentos) * 100 : 0;
+        const eficienciaMedia = summaryData.length > 0 
+          ? summaryData.reduce((sum, item) => sum + item.eficiencia_iea, 0) / summaryData.length 
+          : 0;
 
-      if (error) throw error;
-
-      console.log(`TOTAL de atendimentos encontrados com filtros aplicados: ${atendimentos?.length || 0}`);
-
-      const totalAtendimentos = atendimentos?.length || 0;
-
-      if (totalAtendimentos === 0) {
-        console.log('Nenhum atendimento encontrado com os filtros aplicados');
-        setStats({
-          totalAtendimentos: 0,
-          tempoMedio: 0,
-          eficienciaMedia: 0,
-          topEmpresa: 'Sem dados',
-          ticketsPorDia: 0,
-          taxaResolucao: 0,
-          tempoResposta: 0,
-          produtividadeHora: 0,
-          finalizados: 0,
-          emAndamento: 0,
-          pendentes: 0
+        // Agrupar por atendente
+        const atendenteMap = new Map();
+        summaryData.forEach(item => {
+          const current = atendenteMap.get(item.atendente) || {
+            totalAtendimentos: 0,
+            tempoTotal: 0,
+            eficiencia: 0,
+            count: 0
+          };
+          current.totalAtendimentos += item.total_atendimentos;
+          current.tempoTotal += item.tempo_total_minutos;
+          current.eficiencia += item.eficiencia_iea;
+          current.count++;
+          atendenteMap.set(item.atendente, current);
         });
-        setAtendentes([]);
-        setAllActiveAttendants([]);
-        setEmpresas([]);
+
+        const atendentePerformance = Array.from(atendenteMap.entries()).map(([nome, data]) => ({
+          atendente: nome,
+          totalAtendimentos: data.totalAtendimentos,
+          tempoMedio: data.totalAtendimentos > 0 ? data.tempoTotal / data.totalAtendimentos : 0,
+          tempoTotal: data.tempoTotal,
+          eficiencia: data.count > 0 ? data.eficiencia / data.count : 0
+        })).sort((a, b) => b.eficiencia - a.eficiencia);
+
+        setAtendentes(atendentePerformance);
+        setAllActiveAttendants(atendentePerformance);
+
+        setStats({
+          totalAtendimentos,
+          tempoMedio,
+          eficienciaMedia,
+          topEmpresa: 'Dados Agregados',
+          ticketsPorDia: totalAtendimentos / 30,
+          taxaResolucao,
+          tempoResposta: tempoMedio,
+          produtividadeHora: (totalAtendimentos / 30) / 8,
+          finalizados,
+          emAndamento,
+          pendentes
+        });
+
         setDailyData([]);
-        return;
-      }
+        setEmpresas([]);
+        setTasks([]);
+      } else {
+        // Usar lógica original com dados da tabela atendimentos
+        const { data: activeAttendants } = await supabase
+          .from('attendants')
+          .select('name, photo_url')
+          .eq('active', true);
 
-      const tempoTotal = atendimentos.reduce((sum, a) => sum + (a.tempo_total || 0), 0);
-      const tempoMedio = tempoTotal / totalAtendimentos;
-      
-      const finalizados = atendimentos.filter(a => a.status === 'Finalizado' || a.resolvido === true).length;
-      const emAndamento = atendimentos.filter(a => a.status === 'Em Andamento' || (a.status !== 'Finalizado' && a.resolvido !== true && a.status !== 'Pendente')).length;
-      const pendentes = atendimentos.filter(a => a.status === 'Pendente').length;
-      
-      const taxaResolucao = finalizados / totalAtendimentos * 100;
+        const query = buildBaseQuery();
+        
+        if (activeAttendants && activeAttendants.length > 0) {
+          const activeAttendantNames = activeAttendants.map(a => a.name);
+          query.in('atendente', activeAttendantNames);
+        }
 
-      const diasUnicos = new Set(atendimentos.map(a => a.data)).size;
-      const ticketsPorDia = totalAtendimentos / (diasUnicos || 1);
+        const { data: atendimentos, error } = await query;
 
-      const produtividadeHora = ticketsPorDia / 8;
+        if (error) throw error;
 
-      const atendenteMap = new Map<string, { total: number; tempo: number; }>();
-      atendimentos.forEach(atendimento => {
-        const current = atendenteMap.get(atendimento.atendente) || { total: 0, tempo: 0 };
-        current.total++;
-        current.tempo += atendimento.tempo_total || 0;
-        atendenteMap.set(atendimento.atendente, current);
-      });
+        console.log(`TOTAL de atendimentos encontrados com filtros aplicados: ${atendimentos?.length || 0}`);
 
-      const allActivePerformance: AtendentePerformance[] = [];
-      
-      if (activeAttendants) {
-        activeAttendants.forEach(attendant => {
-          const data = atendenteMap.get(attendant.name) || { total: 0, tempo: 0 };
-          const tempoMedio = data.total > 0 ? data.tempo / data.total : 0;
-          const eficiencia = tempoMedio > 0 ? data.total / tempoMedio : 0;
-          
-          allActivePerformance.push({
-            atendente: attendant.name,
+        const totalAtendimentos = atendimentos?.length || 0;
+
+        if (totalAtendimentos === 0) {
+          console.log('Nenhum atendimento encontrado com os filtros aplicados');
+          setStats({
+            totalAtendimentos: 0,
+            tempoMedio: 0,
+            eficienciaMedia: 0,
+            topEmpresa: 'Sem dados',
+            ticketsPorDia: 0,
+            taxaResolucao: 0,
+            tempoResposta: 0,
+            produtividadeHora: 0,
+            finalizados: 0,
+            emAndamento: 0,
+            pendentes: 0
+          });
+          setAtendentes([]);
+          setAllActiveAttendants([]);
+          setEmpresas([]);
+          setDailyData([]);
+          return;
+        }
+
+        const tempoTotal = atendimentos.reduce((sum, a) => sum + (a.tempo_total || 0), 0);
+        const tempoMedio = tempoTotal / totalAtendimentos;
+        
+        const finalizados = atendimentos.filter(a => a.status === 'Finalizado' || a.resolvido === true).length;
+        const emAndamento = atendimentos.filter(a => a.status === 'Em Andamento' || (a.status !== 'Finalizado' && a.resolvido !== true && a.status !== 'Pendente')).length;
+        const pendentes = atendimentos.filter(a => a.status === 'Pendente').length;
+        
+        const taxaResolucao = finalizados / totalAtendimentos * 100;
+
+        const diasUnicos = new Set(atendimentos.map(a => a.data)).size;
+        const ticketsPorDia = totalAtendimentos / (diasUnicos || 1);
+
+        const produtividadeHora = ticketsPorDia / 8;
+
+        const atendenteMap = new Map<string, { total: number; tempo: number; }>();
+        atendimentos.forEach(atendimento => {
+          const current = atendenteMap.get(atendimento.atendente) || { total: 0, tempo: 0 };
+          current.total++;
+          current.tempo += atendimento.tempo_total || 0;
+          atendenteMap.set(atendimento.atendente, current);
+        });
+
+        const allActivePerformance: AtendentePerformance[] = [];
+        
+        if (activeAttendants) {
+          activeAttendants.forEach(attendant => {
+            const data = atendenteMap.get(attendant.name) || { total: 0, tempo: 0 };
+            const tempoMedio = data.total > 0 ? data.tempo / data.total : 0;
+            const eficiencia = tempoMedio > 0 ? data.total / tempoMedio : 0;
+            
+            allActivePerformance.push({
+              atendente: attendant.name,
+              totalAtendimentos: data.total,
+              tempoMedio,
+              tempoTotal: data.tempo,
+              eficiencia,
+              foto_url: attendant.photo_url
+            });
+          });
+        }
+
+        allActivePerformance.sort((a, b) => b.eficiencia - a.eficiencia);
+
+        const atendentePerformance: AtendentePerformance[] = Array.from(atendenteMap.entries()).map(([nome, data]) => {
+          const attendant = activeAttendants?.find(a => a.name === nome);
+          const tempoMedio = data.tempo / data.total;
+          return {
+            atendente: nome,
             totalAtendimentos: data.total,
             tempoMedio,
             tempoTotal: data.tempo,
-            eficiencia,
-            foto_url: attendant.photo_url
-          });
+            eficiencia: data.total / tempoMedio || 0,
+            foto_url: attendant?.photo_url
+          };
+        });
+
+        atendentePerformance.sort((a, b) => b.eficiencia - a.eficiencia);
+
+        setAtendentes(atendentePerformance);
+        setAllActiveAttendants(allActivePerformance);
+
+        const empresaMap = new Map<string, number>();
+        atendimentos.forEach(a => {
+          if (a.chave) {
+            empresaMap.set(a.chave, (empresaMap.get(a.chave) || 0) + 1);
+          }
+        });
+
+        const empresasData = Array.from(empresaMap.entries()).map(([nome, total]) => ({
+          nome,
+          total
+        })).sort((a, b) => b.total - a.total).slice(0, 8);
+
+        setEmpresas(empresasData);
+
+        const dailyMap = new Map<string, number>();
+        atendimentos.forEach(a => {
+          const data = a.data;
+          dailyMap.set(data, (dailyMap.get(data) || 0) + 1);
+        });
+
+        const dailyDataArray = Array.from(dailyMap.entries()).map(([data, total]) => ({
+          data: new Date(data).toLocaleDateString('pt-BR'),
+          total
+        })).sort((a, b) => new Date(a.data.split('/').reverse().join('-')).getTime() - new Date(b.data.split('/').reverse().join('-')).getTime());
+
+        setDailyData(dailyDataArray);
+
+        const topEmpresa = empresasData[0]?.nome || 'Sem dados';
+        const eficienciaMedia = atendentePerformance.reduce((sum, a) => sum + a.eficiencia, 0) / atendentePerformance.length || 0;
+
+        setStats({
+          totalAtendimentos,
+          tempoMedio: Number(tempoMedio.toFixed(1)),
+          eficienciaMedia: Number(eficienciaMedia.toFixed(2)),
+          topEmpresa,
+          ticketsPorDia: Number(ticketsPorDia.toFixed(1)),
+          taxaResolucao: Number(taxaResolucao.toFixed(1)),
+          tempoResposta: Number(tempoMedio.toFixed(1)),
+          produtividadeHora: Number(produtividadeHora.toFixed(1)),
+          finalizados,
+          emAndamento,
+          pendentes
+        });
+
+        console.log('Dados carregados com TODOS os registros filtrados:', {
+          totalAtendimentos,
+          finalizados,
+          emAndamento,
+          pendentes,
+          atendentePerformance: atendentePerformance.length,
+          allActivePerformance: allActivePerformance.length,
+          empresas: empresasData.length
         });
       }
-
-      allActivePerformance.sort((a, b) => b.eficiencia - a.eficiencia);
-
-      const atendentePerformance: AtendentePerformance[] = Array.from(atendenteMap.entries()).map(([nome, data]) => {
-        const attendant = activeAttendants?.find(a => a.name === nome);
-        const tempoMedio = data.tempo / data.total;
-        return {
-          atendente: nome,
-          totalAtendimentos: data.total,
-          tempoMedio,
-          tempoTotal: data.tempo,
-          eficiencia: data.total / tempoMedio || 0,
-          foto_url: attendant?.photo_url
-        };
-      });
-
-      atendentePerformance.sort((a, b) => b.eficiencia - a.eficiencia);
-
-      setAtendentes(atendentePerformance);
-      setAllActiveAttendants(allActivePerformance);
-
-      const empresaMap = new Map<string, number>();
-      atendimentos.forEach(a => {
-        if (a.chave) {
-          empresaMap.set(a.chave, (empresaMap.get(a.chave) || 0) + 1);
-        }
-      });
-
-      const empresasData = Array.from(empresaMap.entries()).map(([nome, total]) => ({
-        nome,
-        total
-      })).sort((a, b) => b.total - a.total).slice(0, 8);
-
-      setEmpresas(empresasData);
-
-      const dailyMap = new Map<string, number>();
-      atendimentos.forEach(a => {
-        const data = a.data;
-        dailyMap.set(data, (dailyMap.get(data) || 0) + 1);
-      });
-
-      const dailyDataArray = Array.from(dailyMap.entries()).map(([data, total]) => ({
-        data: new Date(data).toLocaleDateString('pt-BR'),
-        total
-      })).sort((a, b) => new Date(a.data.split('/').reverse().join('-')).getTime() - new Date(b.data.split('/').reverse().join('-')).getTime());
-
-      setDailyData(dailyDataArray);
-
-      const topEmpresa = empresasData[0]?.nome || 'Sem dados';
-      const eficienciaMedia = atendentePerformance.reduce((sum, a) => sum + a.eficiencia, 0) / atendentePerformance.length || 0;
-
-      setStats({
-        totalAtendimentos,
-        tempoMedio: Number(tempoMedio.toFixed(1)),
-        eficienciaMedia: Number(eficienciaMedia.toFixed(2)),
-        topEmpresa,
-        ticketsPorDia: Number(ticketsPorDia.toFixed(1)),
-        taxaResolucao: Number(taxaResolucao.toFixed(1)),
-        tempoResposta: Number(tempoMedio.toFixed(1)),
-        produtividadeHora: Number(produtividadeHora.toFixed(1)),
-        finalizados,
-        emAndamento,
-        pendentes
-      });
-
-      console.log('Dados carregados com TODOS os registros filtrados:', {
-        totalAtendimentos,
-        finalizados,
-        emAndamento,
-        pendentes,
-        atendentePerformance: atendentePerformance.length,
-        allActivePerformance: allActivePerformance.length,
-        empresas: empresasData.length
-      });
 
     } catch (error) {
       console.error('Erro ao carregar dados:', error);
@@ -530,6 +848,35 @@ export default function AtendimentosDashboard() {
           <Card className="bg-white dark:bg-gray-800 shadow-sm border border-gray-200 dark:border-gray-700">
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300">
+                <RefreshCw className="h-4 w-4 text-purple-600" />
+                Atualizar Dados
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <Button 
+                onClick={updateResumoData} 
+                disabled={isUpdatingData} 
+                size="sm" 
+                className="w-full bg-purple-600 hover:bg-purple-700 text-white"
+              >
+                {isUpdatingData ? (
+                  <>
+                    <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                    Atualizando...
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw className="h-4 w-4 mr-2" />
+                    Atualizar Resumos
+                  </>
+                )}
+              </Button>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-white dark:bg-gray-800 shadow-sm border border-gray-200 dark:border-gray-700">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300">
                 <Download className="h-4 w-4 text-purple-600" />
                 Importação
               </CardTitle>
@@ -547,7 +894,7 @@ export default function AtendimentosDashboard() {
             </CardContent>
           </Card>
 
-          <Card className="lg:col-span-3 bg-white dark:bg-gray-800 shadow-sm border border-gray-200 dark:border-gray-700">
+          <Card className="lg:col-span-2 bg-white dark:bg-gray-800 shadow-sm border border-gray-200 dark:border-gray-700">
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300">
                 <Calendar className="h-4 w-4 text-purple-600" />
@@ -904,38 +1251,6 @@ export default function AtendimentosDashboard() {
                   )}
                 </tbody>
               </table>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="bg-white dark:bg-gray-800 shadow-sm border border-gray-200 dark:border-gray-700">
-          <CardHeader className="pb-4">
-            <CardTitle className="text-lg font-semibold text-gray-900 dark:text-white">Métricas de Performance (Atendentes Ordenados por Maior IEA)</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              {allActiveAttendants.length > 0 ? allActiveAttendants.slice(0, 10).map((atendente, index) => (
-                <div key={atendente.atendente} className="space-y-2">
-                  <p className="text-sm font-medium text-gray-700 dark:text-gray-300">{atendente.atendente}</p>
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 bg-gray-200 dark:bg-gray-700 rounded-full h-6 overflow-hidden">
-                      <div className="h-full flex">
-                        <div 
-                          className="bg-purple-500 h-full" 
-                          style={{ width: `${Math.min((atendente.totalAtendimentos / Math.max(...allActiveAttendants.map(a => a.totalAtendimentos), 1)) * 100, 100)}%` }}
-                        ></div>
-                      </div>
-                    </div>
-                    <span className="text-sm text-gray-600 dark:text-gray-400 min-w-[3rem]">
-                      {atendente.totalAtendimentos}
-                    </span>
-                  </div>
-                </div>
-              )) : (
-                <div className="text-center text-gray-500 dark:text-gray-400 py-4">
-                  Nenhum dado de performance disponível
-                </div>
-              )}
             </div>
           </CardContent>
         </Card>

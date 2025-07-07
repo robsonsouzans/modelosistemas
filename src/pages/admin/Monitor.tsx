@@ -85,100 +85,192 @@ export default function Monitor() {
         return;
       }
 
-      // Buscar TODOS os atendimentos no período específico sem limitação
-      let query = supabase
-        .from('atendimentos')
-        .select('*')
-        .gte('data', startDate)
-        .lte('data', endDate);
+      // Tentar usar dados da tabela de resumo primeiro
+      const periodToSummaryType = {
+        'weekly': 'semanal',
+        'monthly': 'mensal',
+        'yearly': 'anual'
+      };
 
-      // Filtrar apenas atendentes ativos
-      const activeAttendantNames = activeAttendants.map(a => a.name);
-      query = query.in('atendente', activeAttendantNames);
+      const summaryType = periodToSummaryType[selectedPeriod as keyof typeof periodToSummaryType];
+      let shouldUseSummaryData = false;
+      let summaryData: any[] = [];
 
-      // REMOVIDO: .limit() para buscar TODOS os registros
-      const { data: atendimentos, error } = await query;
+      if (summaryType) {
+        // Buscar dados da tabela de resumo
+        const { data: resumoData, error: resumoError } = await supabase
+          .from('atendimentos_resumo')
+          .select('*')
+          .eq('periodo_tipo', summaryType)
+          .gte('data_inicio', startDate)
+          .lte('data_fim', endDate)
+          .in('atendente', activeAttendants.map(a => a.name));
 
-      if (error) {
-        console.error('Erro ao buscar atendimentos:', error);
-        throw error;
+        if (!resumoError && resumoData && resumoData.length > 0) {
+          summaryData = resumoData;
+          shouldUseSummaryData = true;
+          console.log('Usando dados da tabela de resumo:', summaryData.length, 'registros');
+        }
       }
 
-      console.log(`TOTAL de atendimentos encontrados para o período: ${atendimentos?.length || 0}`);
+      if (shouldUseSummaryData) {
+        // Processar dados da tabela de resumo
+        const atendenteMap = new Map();
+        summaryData.forEach(item => {
+          const current = atendenteMap.get(item.atendente) || {
+            totalAtendimentos: 0,
+            tempoTotal: 0,
+            eficiencia: 0,
+            count: 0
+          };
+          current.totalAtendimentos += item.total_atendimentos;
+          current.tempoTotal += item.tempo_total_minutos;
+          current.eficiencia += item.eficiencia_iea;
+          current.count++;
+          atendenteMap.set(item.atendente, current);
+        });
 
-      if (!atendimentos || atendimentos.length === 0) {
-        console.log('Nenhum atendimento encontrado para o período');
-        // Ainda mostrar todos os atendentes ativos, mas com valores zerados
-        const emptyPerformance: AtendentePerformance[] = activeAttendants.map(attendant => ({
-          atendente: attendant.name,
-          totalAtendimentos: 0,
-          tempoMedio: 0,
-          tempoTotal: 0,
-          eficiencia: 0,
-          foto_url: attendant.photo_url
-        }));
+        // Criar performance para TODOS os atendentes ativos
+        const allActivePerformance: AtendentePerformance[] = activeAttendants.map(attendant => {
+          const data = atendenteMap.get(attendant.name) || { totalAtendimentos: 0, tempoTotal: 0, eficiencia: 0, count: 0 };
+          const tempoMedio = data.totalAtendimentos > 0 ? data.tempoTotal / data.totalAtendimentos : 0;
+          const eficiencia = data.count > 0 ? data.eficiencia / data.count : 0;
+          
+          return {
+            atendente: attendant.name,
+            totalAtendimentos: data.totalAtendimentos,
+            tempoMedio,
+            tempoTotal: data.tempoTotal,
+            eficiencia,
+            foto_url: attendant.photo_url
+          };
+        });
+
+        // Filtrar apenas atendentes que têm atendimentos no período para o ranking principal
+        const rankingsWithData = allActivePerformance.filter(a => a.totalAtendimentos > 0);
         
-        setRankings([]);
-        setAllActiveAttendants(emptyPerformance);
-        setStats({ totalAtendimentos: 0, ieaMedia: 0, tempoMedio: 0 });
-        return;
+        // Ordenar por eficiência (IEA) do maior para menor
+        rankingsWithData.sort((a, b) => b.eficiencia - a.eficiencia);
+        allActivePerformance.sort((a, b) => b.eficiencia - a.eficiencia);
+
+        console.log('Rankings calculados com dados agregados:', {
+          totalRegistros: summaryData.length,
+          rankingsComDados: rankingsWithData.length,
+          todosAtendentesAtivos: allActivePerformance.length
+        });
+
+        setRankings(rankingsWithData);
+        setAllActiveAttendants(allActivePerformance);
+
+        // Calcular estatísticas gerais
+        const totalAtendimentos = summaryData.reduce((sum, item) => sum + item.total_atendimentos, 0);
+        const tempoTotal = summaryData.reduce((sum, item) => sum + item.tempo_total_minutos, 0);
+        const tempoMedio = totalAtendimentos > 0 ? tempoTotal / totalAtendimentos : 0;
+        const ieaMedia = rankingsWithData.length > 0 
+          ? rankingsWithData.reduce((sum, a) => sum + a.eficiencia, 0) / rankingsWithData.length 
+          : 0;
+
+        setStats({
+          totalAtendimentos,
+          ieaMedia,
+          tempoMedio
+        });
+      } else {
+        // Usar lógica original com dados da tabela atendimentos
+        // Buscar TODOS os atendimentos no período específico sem limitação
+        let query = supabase
+          .from('atendimentos')
+          .select('*')
+          .gte('data', startDate)
+          .lte('data', endDate);
+
+        // Filtrar apenas atendentes ativos
+        const activeAttendantNames = activeAttendants.map(a => a.name);
+        query = query.in('atendente', activeAttendantNames);
+
+        const { data: atendimentos, error } = await query;
+
+        if (error) {
+          console.error('Erro ao buscar atendimentos:', error);
+          throw error;
+        }
+
+        console.log(`TOTAL de atendimentos encontrados para o período: ${atendimentos?.length || 0}`);
+
+        if (!atendimentos || atendimentos.length === 0) {
+          console.log('Nenhum atendimento encontrado para o período');
+          // Ainda mostrar todos os atendentes ativos, mas com valores zerados
+          const emptyPerformance: AtendentePerformance[] = activeAttendants.map(attendant => ({
+            atendente: attendant.name,
+            totalAtendimentos: 0,
+            tempoMedio: 0,
+            tempoTotal: 0,
+            eficiencia: 0,
+            foto_url: attendant.photo_url
+          }));
+          
+          setRankings([]);
+          setAllActiveAttendants(emptyPerformance);
+          setStats({ totalAtendimentos: 0, ieaMedia: 0, tempoMedio: 0 });
+          return;
+        }
+
+        // Calcular performance por atendente
+        const atendenteMap = new Map<string, { total: number; tempo: number; }>();
+        
+        atendimentos.forEach(atendimento => {
+          const current = atendenteMap.get(atendimento.atendente) || { total: 0, tempo: 0 };
+          current.total++;
+          current.tempo += atendimento.tempo_total || 0;
+          atendenteMap.set(atendimento.atendente, current);
+        });
+
+        // Criar performance para TODOS os atendentes ativos
+        const allActivePerformance: AtendentePerformance[] = activeAttendants.map(attendant => {
+          const data = atendenteMap.get(attendant.name) || { total: 0, tempo: 0 };
+          const tempoMedio = data.total > 0 ? data.tempo / data.total : 0;
+          const eficiencia = tempoMedio > 0 ? data.total / tempoMedio : 0;
+          
+          return {
+            atendente: attendant.name,
+            totalAtendimentos: data.total,
+            tempoMedio,
+            tempoTotal: data.tempo,
+            eficiencia,
+            foto_url: attendant.photo_url
+          };
+        });
+
+        // Filtrar apenas atendentes que têm atendimentos no período para o ranking principal
+        const rankingsWithData = allActivePerformance.filter(a => a.totalAtendimentos > 0);
+        
+        // Ordenar por eficiência (IEA) do maior para menor
+        rankingsWithData.sort((a, b) => b.eficiencia - a.eficiencia);
+        allActivePerformance.sort((a, b) => b.eficiencia - a.eficiencia);
+
+        console.log('Rankings calculados com TODOS os dados:', {
+          totalRegistros: atendimentos.length,
+          rankingsComDados: rankingsWithData.length,
+          todosAtendentesAtivos: allActivePerformance.length
+        });
+
+        setRankings(rankingsWithData);
+        setAllActiveAttendants(allActivePerformance);
+
+        // Calcular estatísticas gerais
+        const totalAtendimentos = atendimentos.length;
+        const tempoTotal = atendimentos.reduce((sum, a) => sum + (a.tempo_total || 0), 0);
+        const tempoMedio = totalAtendimentos > 0 ? tempoTotal / totalAtendimentos : 0;
+        const ieaMedia = rankingsWithData.length > 0 
+          ? rankingsWithData.reduce((sum, a) => sum + a.eficiencia, 0) / rankingsWithData.length 
+          : 0;
+
+        setStats({
+          totalAtendimentos,
+          ieaMedia,
+          tempoMedio
+        });
       }
-
-      // Calcular performance por atendente
-      const atendenteMap = new Map<string, { total: number; tempo: number; }>();
-      
-      atendimentos.forEach(atendimento => {
-        const current = atendenteMap.get(atendimento.atendente) || { total: 0, tempo: 0 };
-        current.total++;
-        current.tempo += atendimento.tempo_total || 0;
-        atendenteMap.set(atendimento.atendente, current);
-      });
-
-      // Criar performance para TODOS os atendentes ativos
-      const allActivePerformance: AtendentePerformance[] = activeAttendants.map(attendant => {
-        const data = atendenteMap.get(attendant.name) || { total: 0, tempo: 0 };
-        const tempoMedio = data.total > 0 ? data.tempo / data.total : 0;
-        const eficiencia = tempoMedio > 0 ? data.total / tempoMedio : 0;
-        
-        return {
-          atendente: attendant.name,
-          totalAtendimentos: data.total,
-          tempoMedio,
-          tempoTotal: data.tempo,
-          eficiencia,
-          foto_url: attendant.photo_url
-        };
-      });
-
-      // Filtrar apenas atendentes que têm atendimentos no período para o ranking principal
-      const rankingsWithData = allActivePerformance.filter(a => a.totalAtendimentos > 0);
-      
-      // Ordenar por eficiência (IEA) do maior para menor
-      rankingsWithData.sort((a, b) => b.eficiencia - a.eficiencia);
-      allActivePerformance.sort((a, b) => b.eficiencia - a.eficiencia);
-
-      console.log('Rankings calculados com TODOS os dados:', {
-        totalRegistros: atendimentos.length,
-        rankingsComDados: rankingsWithData.length,
-        todosAtendentesAtivos: allActivePerformance.length
-      });
-
-      setRankings(rankingsWithData);
-      setAllActiveAttendants(allActivePerformance);
-
-      // Calcular estatísticas gerais
-      const totalAtendimentos = atendimentos.length;
-      const tempoTotal = atendimentos.reduce((sum, a) => sum + (a.tempo_total || 0), 0);
-      const tempoMedio = totalAtendimentos > 0 ? tempoTotal / totalAtendimentos : 0;
-      const ieaMedia = rankingsWithData.length > 0 
-        ? rankingsWithData.reduce((sum, a) => sum + a.eficiencia, 0) / rankingsWithData.length 
-        : 0;
-
-      setStats({
-        totalAtendimentos,
-        ieaMedia,
-        tempoMedio
-      });
 
     } catch (error) {
       console.error('Erro ao carregar rankings:', error);

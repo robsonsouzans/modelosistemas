@@ -107,6 +107,60 @@ export type Database = {
         }
         Relationships: []
       }
+      atendimentos_resumo: {
+        Row: {
+          atendente: string
+          created_at: string
+          data_fim: string
+          data_inicio: string
+          eficiencia_iea: number
+          em_andamento: number
+          finalizados: number
+          id: string
+          pendentes: number
+          periodo_tipo: string
+          taxa_resolucao: number
+          tempo_medio_minutos: number
+          tempo_total_minutos: number
+          total_atendimentos: number
+          updated_at: string
+        }
+        Insert: {
+          atendente: string
+          created_at?: string
+          data_fim: string
+          data_inicio: string
+          eficiencia_iea?: number
+          em_andamento?: number
+          finalizados?: number
+          id?: string
+          pendentes?: number
+          periodo_tipo: string
+          taxa_resolucao?: number
+          tempo_medio_minutos?: number
+          tempo_total_minutos?: number
+          total_atendimentos?: number
+          updated_at?: string
+        }
+        Update: {
+          atendente?: string
+          created_at?: string
+          data_fim?: string
+          data_inicio?: string
+          eficiencia_iea?: number
+          em_andamento?: number
+          finalizados?: number
+          id?: string
+          pendentes?: number
+          periodo_tipo?: string
+          taxa_resolucao?: number
+          tempo_medio_minutos?: number
+          tempo_total_minutos?: number
+          total_atendimentos?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
       attendants: {
         Row: {
           active: boolean
@@ -238,6 +292,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      atualizar_resumo_atendimentos: {
+        Args: Record<PropertyKey, never>
+        Returns: undefined
+      }
       verify_admin_login: {
         Args: { input_username: string; input_password: string }
         Returns: boolean
